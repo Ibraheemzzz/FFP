@@ -544,7 +544,118 @@ Retrieve all plans accessible to the calling account, including all public seede
 #### Pagination Policy:
 The response returns the full array of matching plans without pagination in this phase (`No Pagination`), as tenant-accessible plan catalogs are currently small. Pagination parameters (`limit`/`offset`) are documented for future scalability if catalog size warrants.
 
+---
 
+## 9. Custom Plans API: `POST /plans` & `PATCH /plans/:planId` (Part 13)
 
+### 9.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
 
+1. **Identifier Generation & Uniqueness Barrier:**
+   - Plan identifiers are generated in the format `plan_<24 hex characters>` (29 characters total, safely within `VARCHAR(64)`).
+   - The random space of $2^{96}$ possible identifiers makes the probability of collision negligible, while PostgreSQL's `PRIMARY KEY (id)` constraint acts as the formal, mathematical barrier preventing duplicate persistence.
+2. **Zero-Quota Support (`monthlyLimit = 0`, `perRequestLimit = 0`):**
+   - Both limits accept non-negative safe integers (`>= 0`).
+   - A limit of `0` is an intentional architectural mechanism enabling accounts to define paused or restricted tiers without mutating account or user assignments.
+3. **Plan Name Uniqueness Policy:**
+   - Plan names are not required to be globally or per-account unique. Multiple custom plans may share identical names (e.g., "Custom Team Tier"), while the immutable `id` acts as the unambiguous reference across the system.
+4. **Immutable Plan Scope (`type`):**
+   - Plan scope (`ACCOUNT` vs `USER`) is fixed at creation time and cannot be mutated via `PATCH`. Converting an account-level plan into a user-level plan would violate referential consistency with already assigned entities.
+5. **Atomic Partial Update (`COALESCE` without Read-Modify-Write):**
+   - Updates use SQL `COALESCE($param, column)` directly. Omitted fields are passed as `null` to SQL, retaining existing values atomically.
+   - This approach avoids read-then-rewrite anti-patterns, eliminating race conditions when concurrent requests modify distinct fields of the same plan.
+6. **Public Plan Immutability (`403 Forbidden`):**
+   - Public baseline plans (`plan_default_account`, `plan_default_user`) are strictly read-only. Modification attempts return `403 Forbidden` (`Default public plans cannot be modified`).
+7. **Cross-Tenant Isolation (`404 Not Found`):**
+   - Attempts to access or mutate plans belonging to other accounts return `404 Not Found` (`Plan not found`). The service does not reveal the existence of foreign private plans.
 
+---
+
+### 9.2 Endpoint Details: `POST /plans` (Custom Plan Creation)
+
+#### Request Details
+- **Method:** `POST`
+- **Path:** `/plans`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Body:**
+```json
+{
+  "name": "Custom Engineering Plan",
+  "type": "USER",
+  "monthlyLimit": 25000,
+  "perRequestLimit": 500
+}
+```
+
+#### Field Specifications:
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `name` | string | 1-100 chars (trimmed) | Display name of the plan |
+| `type` | string | `'ACCOUNT'` or `'USER'` | Scope of applicability |
+| `monthlyLimit` | number | Safe integer `>= 0` | Monthly allowance in units |
+| `perRequestLimit` | number | Safe integer `>= 0` | Cap on single discrete request |
+
+#### Validation & Errors
+- `400 Bad Request`: Missing fields, invalid types, negative limits, unsafe integers, or extraneous/unrecognized fields (`Unknown field: <key>`).
+- `401 Unauthorized`: Missing or invalid Bearer token.
+- `500 Internal Server Error`: Infrastructure or database connectivity failure.
+
+#### Successful Response (`201 Created`)
+- **Status Code:** `201 Created`
+- **Headers:**
+  - `Location: /plans/:planId`
+  - `Content-Type: application/json; charset=utf-8`
+- **Body:**
+```json
+{
+  "id": "plan_0123456789abcdef01234567",
+  "name": "Custom Engineering Plan",
+  "type": "USER",
+  "monthlyLimit": 25000,
+  "perRequestLimit": 500,
+  "ownerAccountId": "acc_0123456789abcdef01234567",
+  "createdAt": "2026-10-15T21:40:00.000Z",
+  "updatedAt": "2026-10-15T21:40:00.000Z"
+}
+```
+
+---
+
+### 9.3 Endpoint Details: `PATCH /plans/:planId` (Custom Plan Modification)
+
+#### Request Details
+- **Method:** `PATCH`
+- **Path:** `/plans/:planId`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Body (Partial Update):**
+```json
+{
+  "monthlyLimit": 30000
+}
+```
+
+#### Update Rules:
+1. **At Least One Field:** Request body must contain at least one modifiable field (`name`, `monthlyLimit`, or `perRequestLimit`). Empty `{}` is rejected with `400 Bad Request`.
+2. **Explicit Null Rejection:** Sending `null` for any field (e.g., `{ "name": null }`) is strictly rejected with `400 Bad Request`. Only completely omitted fields retain their existing values.
+3. **Immutable Type:** Any payload containing `"type"` is rejected with `400 Bad Request` (`"Plan type cannot be changed"`).
+4. **Unknown Fields:** Any unrecognized properties are strictly rejected via `Object.keys`.
+
+#### Access Control & Isolation Responses:
+- `403 Forbidden`: Returned when attempting to modify a public baseline plan (`Default public plans cannot be modified`).
+- `404 Not Found`: Returned when `planId` does not exist or is owned by another account (`Plan not found`).
+
+#### Successful Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Headers:** `Content-Type: application/json; charset=utf-8`
+- **Body:**
+```json
+{
+  "id": "plan_0123456789abcdef01234567",
+  "name": "Custom Engineering Plan",
+  "type": "USER",
+  "monthlyLimit": 30000,
+  "perRequestLimit": 500,
+  "ownerAccountId": "acc_0123456789abcdef01234567",
+  "createdAt": "2026-10-15T21:40:00.000Z",
+  "updatedAt": "2026-10-15T21:50:00.000Z"
+}
+```

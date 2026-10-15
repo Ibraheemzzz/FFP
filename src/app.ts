@@ -11,8 +11,13 @@ import {
   getAccessiblePlan,
   listAccessiblePlans,
   validatePlanTypeFilter,
+  validatePlanDefinition,
+  validatePlanUpdateInput,
+  createCustomPlan,
+  updateCustomPlan,
   assertResourceFound,
   NotFoundError,
+  ForbiddenError,
   PlanValidationError,
 } from './plans.js';
 import {
@@ -225,6 +230,71 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(400).send({ error: err.message });
         }
         console.error('Failed to list plans due to an unexpected error');
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 10. مسار إنشاء خطة خاصة: POST /plans
+  app.post(
+    '/plans',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        const validatedInput = validatePlanDefinition(request.body);
+        const plan = await createCustomPlan(options.pool, accountId, validatedInput);
+        return reply
+          .code(201)
+          .header('Location', `/plans/${plan.id}`)
+          .send(plan);
+      } catch (err) {
+        if (err instanceof PlanValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        console.error('Failed to create custom plan due to an unexpected error');
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 11. مسار تعديل خطة خاصة: PATCH /plans/:planId
+  app.patch<{ Params: { planId: string } }>(
+    '/plans/:planId',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+      const { planId } = request.params;
+
+      try {
+        const validatedInput = validatePlanUpdateInput(request.body);
+        const updatedPlan = await updateCustomPlan(
+          options.pool,
+          planId,
+          accountId,
+          validatedInput
+        );
+        return reply.code(200).send(updatedPlan);
+      } catch (err) {
+        if (err instanceof PlanValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        if (err instanceof ForbiddenError) {
+          return reply.code(403).send({ error: err.message });
+        }
+        if (err instanceof NotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        console.error('Failed to update custom plan due to an unexpected error');
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }

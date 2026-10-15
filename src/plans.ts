@@ -1,4 +1,5 @@
 // src/plans.ts
+import crypto from 'node:crypto';
 import type pg from 'pg';
 
 /**
@@ -44,6 +45,12 @@ export interface PlanDefinitionInput {
   perRequestLimit: number;
 }
 
+export interface PlanUpdateInput {
+  name?: string;
+  monthlyLimit?: number;
+  perRequestLimit?: number;
+}
+
 /**
  * فئة الخطأ المخصصة لعدم وجود المورد أو عدم إتاحته للمستأجر الحالي
  */
@@ -51,6 +58,16 @@ export class NotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NotFoundError';
+  }
+}
+
+/**
+ * فئة الخطأ المخصصة لمحاولة تعديل الموارد المحمية أو الممنوعة كلياً (مثل الخطط العامة)
+ */
+export class ForbiddenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ForbiddenError';
   }
 }
 
@@ -258,5 +275,202 @@ export async function listAccessiblePlans(
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   }));
+}
+
+/**
+ * توليد معرّف عشوائي مشفر للخطة بصيغة plan_<24 hex chars>.
+ * يولد معرّفاً بطول 29 حرفاً يقع بأمان تحت حد VARCHAR(64).
+ * الفضاء العشوائي (2^96 من المعرفات الممكنة) يقلل احتمال التصادم جداً،
+ * بينما قيد المفتاح الأساسي في PostgreSQL هو الضامن لمنع حفظ أي تكرار.
+ */
+export function generatePlanId(): string {
+  return `plan_${crypto.randomBytes(12).toString('hex')}`;
+}
+
+/**
+ * التحقق الصارم من مدخلات التحديث الجزئي للخطة (PATCH /plans/:planId):
+ * - يجب أن يكون كائناً غير فارغ يحتوي على حقل واحد على الأقل.
+ * - يرفض صراحة محاولة تعديل نوع الخطة 'type'.
+ * - يرفض أي حقول مجهولة أو زائدة عبر Object.keys.
+ * - يرفض صراحة القيمة null لأي حقل مرسل.
+ * - يقبل 0 في monthlyLimit و perRequestLimit كأعداد صحيحة آمنة غير سالبة.
+ */
+export function validatePlanUpdateInput(input: unknown): PlanUpdateInput {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new PlanValidationError('Request body must be a valid JSON object');
+  }
+
+  const record = input as Record<string, unknown>;
+  const keys = Object.keys(record);
+
+  if (keys.length === 0) {
+    throw new PlanValidationError('At least one field must be provided for update');
+  }
+
+  // رفض محاولة تعديل نوع الخطة صراحة
+  if ('type' in record) {
+    throw new PlanValidationError('Plan type cannot be changed');
+  }
+
+  // فحص صارم للحقول المجهولة
+  for (const key of keys) {
+    if (key !== 'name' && key !== 'monthlyLimit' && key !== 'perRequestLimit') {
+      throw new PlanValidationError(`Unknown field: ${key}`);
+    }
+  }
+
+  const result: PlanUpdateInput = {};
+
+  if ('name' in record) {
+    if (record.name === null) {
+      throw new PlanValidationError('name must not be null');
+    }
+    if (typeof record.name !== 'string') {
+      throw new PlanValidationError('name must be a string');
+    }
+    const trimmed = record.name.trim();
+    if (trimmed.length === 0) {
+      throw new PlanValidationError('name must not be empty');
+    }
+    if (trimmed.length > 100) {
+      throw new PlanValidationError('name must not exceed 100 characters');
+    }
+    result.name = trimmed;
+  }
+
+  if ('monthlyLimit' in record) {
+    if (record.monthlyLimit === null) {
+      throw new PlanValidationError('monthlyLimit must not be null');
+    }
+    if (
+      typeof record.monthlyLimit !== 'number' ||
+      !Number.isSafeInteger(record.monthlyLimit)
+    ) {
+      throw new PlanValidationError('monthlyLimit must be a safe integer');
+    }
+    if (record.monthlyLimit < 0) {
+      throw new PlanValidationError('monthlyLimit must not be negative');
+    }
+    result.monthlyLimit = record.monthlyLimit;
+  }
+
+  if ('perRequestLimit' in record) {
+    if (record.perRequestLimit === null) {
+      throw new PlanValidationError('perRequestLimit must not be null');
+    }
+    if (
+      typeof record.perRequestLimit !== 'number' ||
+      !Number.isSafeInteger(record.perRequestLimit)
+    ) {
+      throw new PlanValidationError('perRequestLimit must be a safe integer');
+    }
+    if (record.perRequestLimit < 0) {
+      throw new PlanValidationError('perRequestLimit must not be negative');
+    }
+    result.perRequestLimit = record.perRequestLimit;
+  }
+
+  return result;
+}
+
+/**
+ * إنشاء خطة خاصة بحساب موثق:
+ * - ربط الخطة بحساب المالك الحصري (owner_account_id = accountId)
+ * - توليد معرّف فريد بصيغة plan_...
+ * - قيد المفتاح الأساسي في PostgreSQL يمنع تكرار المعرف
+ */
+export async function createCustomPlan(
+  pool: pg.Pool,
+  accountId: string,
+  input: PlanDefinitionInput
+): Promise<Plan> {
+  const planId = generatePlanId();
+  const result = await pool.query<PlanRow>(
+    `INSERT INTO plans (id, name, type, monthly_limit, per_request_limit, owner_account_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at`,
+    [
+      planId,
+      input.name,
+      input.type,
+      input.monthlyLimit,
+      input.perRequestLimit,
+      accountId,
+    ]
+  );
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    monthlyLimit: Number(row.monthly_limit),
+    perRequestLimit: Number(row.per_request_limit),
+    ownerAccountId: row.owner_account_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+/**
+ * تعديل خطة خاصة بحساب موثق (PATCH):
+ * 1. التحقق من وجود الخطة وإتاحتها للمستأجر عبر getAccessiblePlan
+ * 2. رفض تعديل الخطط العامة بـ ForbiddenError (403)
+ * 3. تنفيذ التحديث الذري في قاعدة البيانات مع اشتراط الملكية المباشر:
+ *    WHERE id = $4 AND owner_account_id = $5
+ *    واستخدام COALESCE للحفاظ على الحقول غير المرسلة دون قراءة مسبقة
+ * 4. فحص عدد الصفوف المتأثرة؛ إذا كان صفراً يُلقى NotFoundError (404) دون افتراض وجود صف
+ */
+export async function updateCustomPlan(
+  pool: pg.Pool,
+  planId: string,
+  accountId: string,
+  input: PlanUpdateInput
+): Promise<Plan> {
+  // فحص مبدئي للوجود والصلاحية مع عزل الحسابات
+  const existingPlan = await getAccessiblePlan(pool, planId, accountId);
+  if (!existingPlan) {
+    throw new NotFoundError('Plan not found');
+  }
+
+  // حماية الخطط العامة من التعديل
+  if (existingPlan.ownerAccountId === null) {
+    throw new ForbiddenError('Default public plans cannot be modified');
+  }
+
+  // التحديث الذري مع العزل التام في SQL والمحافظة على الحقول غير المرسلة
+  const result = await pool.query<PlanRow>(
+    `UPDATE plans
+     SET name = COALESCE($1::varchar, name),
+         monthly_limit = COALESCE($2::bigint, monthly_limit),
+         per_request_limit = COALESCE($3::bigint, per_request_limit),
+         updated_at = NOW()
+     WHERE id = $4 AND owner_account_id = $5
+     RETURNING id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at`,
+    [
+      input.name ?? null,
+      input.monthlyLimit !== undefined ? input.monthlyLimit : null,
+      input.perRequestLimit !== undefined ? input.perRequestLimit : null,
+      planId,
+      accountId,
+    ]
+  );
+
+  // إذا لم يعد الاستعلام أي صف، يُرمى خطأ عدم الوجود دون افتراض وجود rows[0]
+  if (result.rows.length === 0) {
+    throw new NotFoundError('Plan not found');
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    monthlyLimit: Number(row.monthly_limit),
+    perRequestLimit: Number(row.per_request_limit),
+    ownerAccountId: row.owner_account_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
 }
 
