@@ -1,0 +1,22 @@
+{
+  "name": "usage-metering-service",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Usage Metering and Quotas Service",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts",
+    "start": "node dist/src/server.js"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
