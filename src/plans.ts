@@ -11,6 +11,10 @@ export interface Plan {
   name: string;
   type: PlanType;
   monthlyLimit: number;
+  /**
+   * حد الاستهلاك للطلب الفردي الواحد (units per single request):
+   * يُفحص لكل عملية استهلاك منفردة، وليس سقفاً لمجموع الطلبات المتزامنة أو قياساً لطاقة الخادم.
+   */
   perRequestLimit: number;
   ownerAccountId: string | null;
   createdAt: string;
@@ -32,6 +36,11 @@ export interface PlanDefinitionInput {
   name: string;
   type: PlanType;
   monthlyLimit: number;
+  /**
+   * حد الاستهلاك للطلب الفردي الواحد (units per single request):
+   * يُفحص لكل عملية استهلاك منفصلة. بعض السياسات والأرقام الافتراضية هي اختيارات تصميمية
+   * معتمدة للمنتج ([مرن — برّر]) وليست متطلبات حرفية مفروضة في الدليل.
+   */
   perRequestLimit: number;
 }
 
@@ -191,3 +200,63 @@ export async function getAccessiblePlan(
     updatedAt: row.updated_at.toISOString(),
   };
 }
+
+/**
+ * التحقق الصارم من معامل التصفية بحسب النوع (Query Parameter: ?type=):
+ * - اختياري: يعيد undefined إذا لم يُرسل
+ * - يرفض القيم الفارغة، أو المصفوفات، أو القيم غير النصية، أو القيم غير المطابقة لـ ACCOUNT أو USER
+ */
+export function validatePlanTypeFilter(typeParam: unknown): PlanType | undefined {
+  if (typeParam === undefined) {
+    return undefined;
+  }
+
+  if (typeof typeParam !== 'string') {
+    throw new PlanValidationError(
+      "Invalid plan type filter. Allowed values: 'ACCOUNT', 'USER'"
+    );
+  }
+
+  // رفض القيم الفارغة بعد trim، والتحقق الصارم بحساسية لحالة الأحرف
+  if (typeParam !== 'ACCOUNT' && typeParam !== 'USER') {
+    throw new PlanValidationError(
+      "Invalid plan type filter. Allowed values: 'ACCOUNT', 'USER'"
+    );
+  }
+
+  return typeParam;
+}
+
+/**
+ * استعلام قائمة الخطط المتاحة للحساب مع تطبيق عزل الحسابات والترتيب الثابت:
+ * - يعيد الخطط العامة (owner_account_id IS NULL) + الخطط الخاصة بالحساب الموثق
+ * - يدعم التصفية الاختيارية بنوع الخطة typeFilter
+ * - الترتيب دائماً تصاعدياً بـ created_at ثم id
+ * - يعيد مصفوفة فارغة [] عند عدم وجود خطط مطابقة دون إلقاء خطأ
+ */
+export async function listAccessiblePlans(
+  pool: pg.Pool,
+  accountId: string,
+  typeFilter?: PlanType
+): Promise<Plan[]> {
+  const result = await pool.query<PlanRow>(
+    `SELECT id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at
+     FROM plans
+     WHERE (owner_account_id = $1 OR owner_account_id IS NULL)
+       AND ($2::varchar IS NULL OR type = $2)
+     ORDER BY created_at ASC, id ASC`,
+    [accountId, typeFilter ?? null]
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    monthlyLimit: Number(row.monthly_limit),
+    perRequestLimit: Number(row.per_request_limit),
+    ownerAccountId: row.owner_account_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  }));
+}
+

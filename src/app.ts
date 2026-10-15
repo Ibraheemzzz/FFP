@@ -9,8 +9,11 @@ import {
 import { createAuthPreHandler } from './auth.js';
 import {
   getAccessiblePlan,
+  listAccessiblePlans,
+  validatePlanTypeFilter,
   assertResourceFound,
   NotFoundError,
+  PlanValidationError,
 } from './plans.js';
 import {
   createUser,
@@ -197,6 +200,31 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(404).send({ error: err.message });
         }
         console.error('Failed to update user plan due to an unexpected error');
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 9. مسار استرجاع قائمة الخطط المتاحة للحساب: GET /plans
+  app.get<{ Querystring: { type?: unknown } }>(
+    '/plans',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        const typeFilter = validatePlanTypeFilter(request.query.type);
+        const plans = await listAccessiblePlans(options.pool, accountId, typeFilter);
+        return reply.code(200).send(plans);
+      } catch (err) {
+        if (err instanceof PlanValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        console.error('Failed to list plans due to an unexpected error');
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }

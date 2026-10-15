@@ -460,6 +460,91 @@ All four fields are strictly required:
 4. **Strict Unknown Field Rejection:**
    Field inspection via `Object.keys` strictly rejects any extraneous, unapproved, or case-mismatched fields (e.g., `MonthlyLimit`, `plan_type`) with a `PlanValidationError` (`Unknown field: <fieldName>`). No automatic type coercion is performed.
 
+---
+
+## 8. Default Seeded Plans & Plan Listing: `GET /plans` (Part 12)
+
+### 8.1 Default Baseline Plans & Design Principles
+Upon database migration, the service guarantees the availability of two public baseline plans:
+
+| Identifier | Name | Scope (`type`) | Monthly Limit | Single Request Limit | Ownership |
+|---|---|---|---|---|---|
+| `plan_default_account` | `Default Account Plan` | `ACCOUNT` | `100,000` | `1,000` | `NULL` (Public) |
+| `plan_default_user` | `Default User Plan` | `USER` | `10,000` | `500` | `NULL` (Public) |
+
+#### Operational Context & Scope of Limits:
+1. **Single-Request Consumption Limit (`perRequestLimit`):**
+   - The `perRequestLimit` parameter defines the maximum consumption quota (`units`) allowed in a single discrete consumption transaction (`POST /consumptions`).
+   - It is evaluated on a per-request basis to prevent a single excessive or anomalous API call from draining an entire monthly allocation.
+   - It is strictly **not** a rate limit on concurrent requests, nor a throughput capacity benchmark of the server or network.
+2. **Design Choices vs Literal Handbook Requirements (`[مرن — برّر]`):**
+   - The default plan values (such as `100,000` monthly / `1,000` per request for Accounts, and `10,000` monthly / `500` per request for Users) are **adopted design choices** representing realistic illustrative product tiers.
+   - These figures are intentionally flexible architectural decisions (`[مرن — برّر]`) and are not literal mandatory constants prescribed by the guide.
+   - Future extensions (such as tier upgrades or custom enterprise limits) can configure different values without altering the core metering invariants.
+
+### 8.2 Distinct Idempotency Mechanisms
+The architecture distinguishes between two independent idempotency mechanisms:
+1. **Migration Runner Layer (`runMigrations`):** Inspects `schema_migrations` and skips already-applied files, avoiding re-reading or executing migration files on subsequent startups.
+2. **SQL Statement Layer (`ON CONFLICT (id) DO NOTHING`):** Located inside `migrations/002_seed_default_plans.sql`. Prevents duplicate primary key insertion errors if the SQL script is executed directly. It protects against re-insertion collisions; it does not render records read-only in PostgreSQL. Mutation protection for public plans is an application-level constraint implemented in Part 13.
+
+---
+
+### 8.3 Endpoint Details: `GET /plans`
+
+#### Objective
+Retrieve all plans accessible to the calling account, including all public seeded plans and private custom plans owned by the account, with deterministic ordering.
+
+#### Request Details
+- **Method:** `GET`
+- **Path:** `/plans`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Query Parameters:**
+  - `type` (optional): Filter results by scope. Strictly `'ACCOUNT'` or `'USER'` (case-sensitive).
+
+#### Validation and Error Responses
+- `400 Bad Request`: Returned if `type` query parameter is empty (`?type=`), duplicated/array (`?type=ACCOUNT&type=USER`), lowercase, or unsupported (`?type=UNKNOWN`).
+- `401 Unauthorized`: Missing or invalid API key (`WWW-Authenticate: Bearer`).
+- `500 Internal Server Error`: Safe generic response on database or unexpected infrastructure failures.
+
+#### Tenant Isolation and Visibility Rules
+- Callers without custom plans see all matching public default plans.
+- Callers with custom plans see matching public plans plus their own private plans (`owner_account_id = accountId`).
+- Private plans belonging to other accounts are strictly filtered out by the database query.
+- When an isolated environment or filter contains zero matching accessible plans, the endpoint returns `200 OK` with an empty array `[]`.
+
+#### Successful Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Headers:** `Content-Type: application/json; charset=utf-8`
+- **Body:**
+```json
+[
+  {
+    "id": "plan_default_account",
+    "name": "Default Account Plan",
+    "type": "ACCOUNT",
+    "monthlyLimit": 100000,
+    "perRequestLimit": 1000,
+    "ownerAccountId": null,
+    "createdAt": "2026-10-15T00:00:00.000Z",
+    "updatedAt": "2026-10-15T00:00:00.000Z"
+  },
+  {
+    "id": "plan_default_user",
+    "name": "Default User Plan",
+    "type": "USER",
+    "monthlyLimit": 10000,
+    "perRequestLimit": 500,
+    "ownerAccountId": null,
+    "createdAt": "2026-10-15T00:00:00.000Z",
+    "updatedAt": "2026-10-15T00:00:00.000Z"
+  }
+]
+```
+
+#### Pagination Policy:
+The response returns the full array of matching plans without pagination in this phase (`No Pagination`), as tenant-accessible plan catalogs are currently small. Pagination parameters (`limit`/`offset`) are documented for future scalability if catalog size warrants.
+
+
 
 
 
