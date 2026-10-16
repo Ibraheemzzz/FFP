@@ -4,7 +4,10 @@ import type pg from 'pg';
 import {
   createAccount,
   validateCreateAccountInput,
+  validateUpdateAccountPlanInput,
+  updateAccountPlan,
   AccountValidationError,
+  AccountNotFoundError,
 } from './accounts.js';
 import { createAuthPreHandler } from './auth.js';
 import {
@@ -97,7 +100,39 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 5. مسار استرجاع خطة متاحة للحساب الموثق: GET /plans/:planId
+  // 5. مسار تغيير خطة الحساب: PATCH /account/plan (Part 14)
+  app.patch(
+    '/account/plan',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        const validatedInput = validateUpdateAccountPlanInput(request.body);
+        const updatedAccount = await updateAccountPlan(
+          options.pool,
+          accountId,
+          validatedInput.planId
+        );
+        return reply.code(200).send(updatedAccount);
+      } catch (err) {
+        if (err instanceof AccountValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        if (err instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        console.error('Failed to update account plan due to an unexpected error');
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 6. مسار استرجاع خطة متاحة للحساب الموثق: GET /plans/:planId
   app.get<{ Params: { planId: string } }>(
     '/plans/:planId',
     { preHandler: requireAuth },

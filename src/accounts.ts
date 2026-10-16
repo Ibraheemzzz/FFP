@@ -1,6 +1,7 @@
 // src/accounts.ts
 import crypto from 'node:crypto';
 import type pg from 'pg';
+import { getAccessiblePlan } from './plans.js';
 
 export interface CreateAccountInput {
   name: string;
@@ -162,3 +163,126 @@ export async function createAccount(
     createdAt: row.created_at.toISOString(),
   };
 }
+
+export interface UpdateAccountPlanInput {
+  planId: string;
+}
+
+export class AccountNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountNotFoundError';
+  }
+}
+
+export interface AccountProfile {
+  id: string;
+  name: string;
+  planId: string;
+  createdAt: string;
+}
+
+const ALLOWED_UPDATE_ACCOUNT_PLAN_FIELDS = new Set(['planId']);
+
+/**
+ * التحقق الصارم من مدخلات تحديث خطة الحساب:
+ * - يتطلب كائناً غير فارغ يحتوي planId كنص غير فارغ بحد أقصى 64 محرفاً
+ * - يرفض أي حقول إضافية غير planId
+ * - يرفض null صراحة
+ */
+export function validateUpdateAccountPlanInput(body: unknown): UpdateAccountPlanInput {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new AccountValidationError('Request body must be a valid JSON object');
+  }
+
+  const record = body as Record<string, unknown>;
+  const keys = Object.keys(record);
+
+  if (keys.length === 0) {
+    throw new AccountValidationError('At least one field must be provided for update');
+  }
+
+  for (const key of keys) {
+    if (!ALLOWED_UPDATE_ACCOUNT_PLAN_FIELDS.has(key)) {
+      throw new AccountValidationError(`Unknown field: ${key}`);
+    }
+  }
+
+  if (!('planId' in record) || record.planId === undefined) {
+    throw new AccountValidationError('planId is required');
+  }
+
+  if (record.planId === null) {
+    throw new AccountValidationError('planId must not be null');
+  }
+
+  if (typeof record.planId !== 'string') {
+    throw new AccountValidationError('planId must be a string');
+  }
+
+  const trimmed = record.planId.trim();
+  if (trimmed.length === 0) {
+    throw new AccountValidationError('planId must not be empty');
+  }
+
+  if (trimmed.length > 64) {
+    throw new AccountValidationError('planId must not exceed 64 characters');
+  }
+
+  return { planId: trimmed };
+}
+
+/**
+ * تحديث خطة الحساب الموثق:
+ * - التحقق من إتاحة الخطة المستهدفة للحساب الموثق عبر getAccessiblePlan
+ * - توحيد رسالة الخطأ للخطة غير الموجودة أو المملوكة لحساب آخر
+ * - التحقق من أن نوع الخطة هو ACCOUNT حصراً
+ * - تنفيذ UPDATE ذري مشروط بمعرّف الحساب الموثق حصراً
+ * - فحص وجود الصف المتأثر لتجنب الانهيار عند قراءة صف غير موجود
+ */
+export async function updateAccountPlan(
+  pool: pg.Pool,
+  accountId: string,
+  newPlanId: string
+): Promise<AccountProfile> {
+  // 1. التحقق من إتاحة الخطة للحساب الموثق (خطة عامة أو خاصة بنفس الحساب)
+  const plan = await getAccessiblePlan(pool, newPlanId, accountId);
+  if (!plan) {
+    throw new AccountValidationError('Plan not found or not accessible');
+  }
+
+  // 2. التحقق من أن نوع الخطة هو ACCOUNT
+  if (plan.type !== 'ACCOUNT') {
+    throw new AccountValidationError(
+      `Plan '${newPlanId}' is a ${plan.type} plan, not an ACCOUNT plan`
+    );
+  }
+
+  // 3. التحديث الذري لحساب المالك
+  const result = await pool.query<{
+    id: string;
+    name: string;
+    plan_id: string;
+    created_at: Date;
+  }>(
+    `UPDATE accounts
+     SET plan_id = $1
+     WHERE id = $2
+     RETURNING id, name, plan_id, created_at`,
+    [newPlanId, accountId]
+  );
+
+  // 4. فحص عدد الصفوف للتأكد من وجود الحساب وعدم الانهيار
+  if (result.rows.length === 0) {
+    throw new AccountNotFoundError('Account not found');
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    planId: row.plan_id,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+

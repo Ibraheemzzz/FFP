@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc",
-    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts",
+    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts && tsx tests/plan-assignments.test.ts",
     "start": "node dist/src/server.js"
   },
   "dependencies": {

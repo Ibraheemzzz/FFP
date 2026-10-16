@@ -659,3 +659,70 @@ The response returns the full array of matching plans without pagination in this
   "updatedAt": "2026-10-15T21:50:00.000Z"
 }
 ```
+
+---
+
+## 10. Plan Assignments & Switching: `PATCH /account/plan` (Part 14)
+
+### 10.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Direct Current Plan Column Representation:**
+   - The current plan is stored directly as `plan_id` on the `accounts` and `users` tables, adhering to the simplest correct design (`أوضح كود صحيح`).
+   - A dedicated historical assignment table is omitted as decision history will be retained in `consumption_records`.
+2. **Storage of Consumed vs Calculated Remaining:**
+   - Only the cumulative consumed units (`total_units`) are persisted in monthly counter tables (`account_monthly_usage` and `user_monthly_usage`).
+   - Remaining quota is calculated dynamically (`monthly_limit - total_units`, floored at 0) rather than stored, avoiding dual-state synchronization anomalies.
+3. **Preservation of Existing Monthly Consumption:**
+   - Switching an account's plan (`PATCH /account/plan`) or a user's plan (`PATCH /users/:userId/plan`) updates future capacity ceilings only.
+   - It strictly **never** resets, recalculates, or mutates existing monthly consumption records (`account_monthly_usage.total_units` and `user_monthly_usage.total_units`).
+   - Re-assigning the currently active plan is accepted idempotently with `200 OK` and preserves consumption.
+4. **Strict Scope Separation (`ACCOUNT` vs `USER`):**
+   - Accounts can only be assigned plans of type `ACCOUNT`.
+   - Users can only be assigned plans of type `USER`.
+   - Any attempt to cross-assign scopes is rejected with `400 Bad Request`.
+5. **Caller Identity & Tenant Isolation:**
+   - In `PATCH /account/plan`, the account identity is exclusively derived from `request.account.id`. Any `accountId` supplied in the request body is rejected as an unknown field.
+   - Plan accessibility is verified via `getAccessiblePlan`. Plans that do not exist or are owned by another account return the unified error message: `"Plan not found or not accessible"`, preventing tenant plan discovery.
+   - After `UPDATE ... RETURNING`, affected row count is verified to ensure safe `404 Not Found` handling without crashing on missing records.
+6. **Concurrency Scope Notice:**
+   - This part implements assignment mutation and verifies consumption preservation. Full concurrency coordination between plan switching and live request deductions using locks is deferred to subsequent dedicated parts.
+
+---
+
+### 10.2 Endpoint Details: `PATCH /account/plan`
+
+#### Request Details
+- **Method:** `PATCH`
+- **Path:** `/account/plan`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Body:**
+```json
+{
+  "planId": "plan_custom_account_enterprise"
+}
+```
+
+#### Validation & Error Responses:
+- `400 Bad Request`:
+  - Empty body `{}` (`At least one field must be provided for update`).
+  - Unknown fields (`Unknown field: <key>`).
+  - `null` or empty `planId` (`planId must not be null`, `planId must not be empty`).
+  - Plan is of type `USER` (`Plan '<id>' is a USER plan, not an ACCOUNT plan`).
+  - Plan does not exist or belongs to another account (`Plan not found or not accessible`).
+- `401 Unauthorized`: Missing or invalid Bearer token.
+- `404 Not Found`: Account row not found in database.
+- `500 Internal Server Error`: Generic safe response on database query failure.
+
+#### Successful Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Headers:** `Content-Type: application/json; charset=utf-8`
+- **Body:**
+```json
+{
+  "id": "acc_0123456789abcdef01234567",
+  "name": "Acme Corporation",
+  "planId": "plan_custom_account_enterprise",
+  "createdAt": "2026-10-15T00:00:00.000Z"
+}
+```
+
