@@ -1,6 +1,7 @@
 // src/plans.ts
 import crypto from 'node:crypto';
 import type pg from 'pg';
+import { type DbExecutor, withAccountLock } from './db.js';
 
 /**
  * نطاق تطبيق الخطة: إما على مستوى الحساب أو على مستوى المستخدم
@@ -190,11 +191,11 @@ export function assertResourceFound<T>(resource: T | null, message: string): T {
  * المنع يتم في الاستعلام لضمان عدم تسريب أي صف يخص حساباً آخر
  */
 export async function getAccessiblePlan(
-  pool: pg.Pool,
+  db: DbExecutor,
   planId: string,
   accountId: string
 ): Promise<Plan | null> {
-  const result = await pool.query<PlanRow>(
+  const result = await db.query<PlanRow>(
     `SELECT id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at
      FROM plans
      WHERE id = $1 AND (owner_account_id = $2 OR owner_account_id IS NULL)`,
@@ -427,50 +428,52 @@ export async function updateCustomPlan(
   accountId: string,
   input: PlanUpdateInput
 ): Promise<Plan> {
-  // فحص مبدئي للوجود والصلاحية مع عزل الحسابات
-  const existingPlan = await getAccessiblePlan(pool, planId, accountId);
-  if (!existingPlan) {
-    throw new NotFoundError('Plan not found');
-  }
+  return withAccountLock(pool, accountId, async (client) => {
+    // فحص مبدئي للوجود والصلاحية مع عزل الحسابات على اتصال المعاملة بعد نيل القفل
+    const existingPlan = await getAccessiblePlan(client, planId, accountId);
+    if (!existingPlan) {
+      throw new NotFoundError('Plan not found');
+    }
 
-  // حماية الخطط العامة من التعديل
-  if (existingPlan.ownerAccountId === null) {
-    throw new ForbiddenError('Default public plans cannot be modified');
-  }
+    // حماية الخطط العامة من التعديل
+    if (existingPlan.ownerAccountId === null) {
+      throw new ForbiddenError('Default public plans cannot be modified');
+    }
 
-  // التحديث الذري مع العزل التام في SQL والمحافظة على الحقول غير المرسلة
-  const result = await pool.query<PlanRow>(
-    `UPDATE plans
-     SET name = COALESCE($1::varchar, name),
-         monthly_limit = COALESCE($2::bigint, monthly_limit),
-         per_request_limit = COALESCE($3::bigint, per_request_limit),
-         updated_at = NOW()
-     WHERE id = $4 AND owner_account_id = $5
-     RETURNING id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at`,
-    [
-      input.name ?? null,
-      input.monthlyLimit !== undefined ? input.monthlyLimit : null,
-      input.perRequestLimit !== undefined ? input.perRequestLimit : null,
-      planId,
-      accountId,
-    ]
-  );
+    // التحديث الذري مع العزل التام في SQL والمحافظة على الحقول غير المرسلة
+    const result = await client.query<PlanRow>(
+      `UPDATE plans
+       SET name = COALESCE($1::varchar, name),
+           monthly_limit = COALESCE($2::bigint, monthly_limit),
+           per_request_limit = COALESCE($3::bigint, per_request_limit),
+           updated_at = NOW()
+       WHERE id = $4 AND owner_account_id = $5
+       RETURNING id, name, type, monthly_limit, per_request_limit, owner_account_id, created_at, updated_at`,
+      [
+        input.name ?? null,
+        input.monthlyLimit !== undefined ? input.monthlyLimit : null,
+        input.perRequestLimit !== undefined ? input.perRequestLimit : null,
+        planId,
+        accountId,
+      ]
+    );
 
-  // إذا لم يعد الاستعلام أي صف، يُرمى خطأ عدم الوجود دون افتراض وجود rows[0]
-  if (result.rows.length === 0) {
-    throw new NotFoundError('Plan not found');
-  }
+    // إذا لم يعد الاستعلام أي صف، يُرمى خطأ عدم الوجود دون افتراض وجود rows[0]
+    if (result.rows.length === 0) {
+      throw new NotFoundError('Plan not found');
+    }
 
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    monthlyLimit: Number(row.monthly_limit),
-    perRequestLimit: Number(row.per_request_limit),
-    ownerAccountId: row.owner_account_id,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-  };
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      monthlyLimit: Number(row.monthly_limit),
+      perRequestLimit: Number(row.per_request_limit),
+      ownerAccountId: row.owner_account_id,
+      createdAt: row.created_at.toISOString(),
+      updatedAt: row.updated_at.toISOString(),
+    };
+  });
 }
 

@@ -726,3 +726,72 @@ The response returns the full array of matching plans without pagination in this
 }
 ```
 
+---
+
+## 11. Plan Changes, Transactional Locking & Immediate Effect (Part 15)
+
+### 11.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Centralized Transaction Runner (`withAccountLock`):**
+   - All three plan-altering mutations (`updateCustomPlan`, `updateAccountPlan`, `updateUserPlan`) execute strictly within an atomic database transaction managed by `withAccountLock` in `src/db.ts`.
+   - The transaction leases a single connection from `pg.Pool`, executes `BEGIN ISOLATION LEVEL READ COMMITTED`, and immediately serializes execution on the account boundary by issuing:
+     ```sql
+     SELECT id FROM accounts WHERE id = $1 FOR UPDATE;
+     ```
+2. **Lock Guarantees & Boundaries:**
+   - **Protocol Guarantee:** The exclusive lock guarantees strict sequential serialization **only** among concurrent operations that adhere to this account-level locking protocol.
+   - **MVCC Non-Blocking:** Normal `SELECT` queries are not blocked by the lock, allowing non-mutating reads (e.g., health checks, public queries) to proceed concurrently without degradation.
+   - **Arrival Ordering:** Network arrival order does not dictate processing sequence; whichever transaction acquires the account row lock first completes first.
+3. **Strict Order of Operational Reads:**
+   - Under `READ COMMITTED`, every query sees committed state at its start time.
+   - All operational reads and validations (checking plan existence via `getAccessiblePlan`, checking user assignment via `getUserById`, checking plan scope) execute strictly **after** the lock is acquired on the leased client, preventing read-modify-write races against concurrent mutations.
+4. **Immediate Visibility Across All Assigned Entities:**
+   - Changes take immediate effect for all requests executed after `COMMIT`.
+   - Modifying a shared custom plan immediately reflects updated limits across all users assigned to that plan without needing to re-assign or publish.
+5. **Historical Consumption Preservation on Downgrades:**
+   - Lowering `monthly_limit` or `per_request_limit` below the current accumulated monthly units (`total_units`) leaves `account_monthly_usage` and `user_monthly_usage` completely untouched.
+   - The service calculates remaining quota dynamically and does not reset or erase historical usage.
+6. **Failure Semantics, Unknown Outcomes, & Clean Resource Disposal:**
+   - **No Premature Success:** `200 OK` is returned to the client only after PostgreSQL confirms successful `COMMIT`.
+   - **Indeterminate State on Commit Loss:** If connection drops during `COMMIT`, the outcome is indeterminate; the application treats this as a server error (`500`) and does not assume a rollback took place.
+   - **Connection Disposal:** If an operation fails or the connection is severed during transaction execution, `ROLLBACK` is attempted, and the connection is destroyed (`client.release(true)`) to prevent dirty client reuse in the pool.
+
+---
+
+## 12. Consumption Input Validation: `validateConsumptionInput` (Part 16)
+
+### 12.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Clear Scope Boundary & No Premature Route Execution:**
+   - In Part 16, validation logic is encapsulated purely in `validateConsumptionInput` within `src/consumptions.ts` and tested directly via isolated unit tests.
+   - An HTTP endpoint `POST /consumptions` with a dummy/temporary success response is **strictly avoided** at this stage. Exposing a route returning `200 OK` before real deduction logic is built could mislead clients or downstream consumers into assuming quota was verified and deducted. Route integration will occur once the complete atomic transaction and concurrency locking pipeline are wired.
+2. **Safe Integer & Positive Amount Rule (`units`):**
+   - The deduction amount `units` is validated using:
+     ```typescript
+     typeof units === 'number' && Number.isSafeInteger(units) && units > 0
+     ```
+   - This strict combination enforces:
+     - Absolute rejection of non-numeric types (`string`, `boolean`, `null`, `undefined`) with zero implicit string-to-number conversion (avoiding silent truncation bugs like `parseInt("10abc")`).
+     - Rejection of non-integer values (floats such as `1.5` or `0.1`).
+     - Rejection of zero (`0`) and negative values (`-1`, `-100`).
+     - Rejection of JavaScript numeric extremes (`NaN`, `Infinity`, `-Infinity`).
+     - Guarding against precision loss by capping at `Number.MAX_SAFE_INTEGER` (`9,007,199,254,740,991`).
+3. **Identifiers Trimming & String Normalization:**
+   - Both `userId` and `requestId` must be non-empty strings.
+   - Whitespace trimming (`.trim()`) is applied to both fields.
+   - **Critical Architecture Semantics for `requestId`:** Applying trimming to `requestId` is essential because its exact normalized string value will define the request's cryptographic/operational identity in the deduplication and idempotency engine (implemented in Part 22). Treating `"req_123 "` and `"req_123"` as different keys would break deduplication guarantees and cause duplicate deductions on retries with irregular whitespace.
+4. **Identifier Length Boundaries:**
+   - `userId`: trimmed length must be between 1 and 64 characters (accepts 64, rejects 65).
+   - `requestId`: trimmed length must be between 1 and 128 characters (accepts 128, rejects 129).
+5. **Strict Field Whitelist & Anti-Spoofing:**
+   - The payload must be a JSON object (not an array, primitive, or null).
+   - Strict whitelisting allows only `userId`, `units`, and `requestId`. Any unexpected or case-mismatched fields (`userid`, `Units`, `RequestId`, `user_id`, `request_id`) or injected tenant fields (`accountId`) are rejected with `ConsumptionValidationError`.
+6. **Subsequent Roadmap Progression:**
+   - **Part 17:** شهر المعالجة (Processing Month — UTC Calendar calculation & monthly usage tracking).
+   - **Part 18:** تقييم القواعد (Quota Rules Evaluation — deterministic evaluation engine).
+   - **Part 19:** المستهلك والمتبقي (Remaining Quota Calculation — dynamic floor calculation without zeroing).
+   - **Part 20:** المعاملة الذرية (Atomic Database Transaction — all-or-nothing ledger persistence).
+   - **Part 21:** أقفال التزامن (Concurrency & Account Locking Protocol).
+   - **Part 22:** منع تكرار الاستهلاك (Deduplication & Idempotent Retry Engine via `requestId`).
+
+

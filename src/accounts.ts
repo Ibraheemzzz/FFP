@@ -1,7 +1,11 @@
 // src/accounts.ts
 import crypto from 'node:crypto';
 import type pg from 'pg';
+import { withAccountLock } from './db.js';
+import { AccountNotFoundError } from './errors.js';
 import { getAccessiblePlan } from './plans.js';
+
+export { AccountNotFoundError };
 
 export interface CreateAccountInput {
   name: string;
@@ -168,13 +172,6 @@ export interface UpdateAccountPlanInput {
   planId: string;
 }
 
-export class AccountNotFoundError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AccountNotFoundError';
-  }
-}
-
 export interface AccountProfile {
   id: string;
   name: string;
@@ -245,44 +242,46 @@ export async function updateAccountPlan(
   accountId: string,
   newPlanId: string
 ): Promise<AccountProfile> {
-  // 1. التحقق من إتاحة الخطة للحساب الموثق (خطة عامة أو خاصة بنفس الحساب)
-  const plan = await getAccessiblePlan(pool, newPlanId, accountId);
-  if (!plan) {
-    throw new AccountValidationError('Plan not found or not accessible');
-  }
+  return withAccountLock(pool, accountId, async (client) => {
+    // 1. التحقق من إتاحة الخطة للحساب الموثق (خطة عامة أو خاصة بنفس الحساب) باستخدام اتصال المعاملة
+    const plan = await getAccessiblePlan(client, newPlanId, accountId);
+    if (!plan) {
+      throw new AccountValidationError('Plan not found or not accessible');
+    }
 
-  // 2. التحقق من أن نوع الخطة هو ACCOUNT
-  if (plan.type !== 'ACCOUNT') {
-    throw new AccountValidationError(
-      `Plan '${newPlanId}' is a ${plan.type} plan, not an ACCOUNT plan`
+    // 2. التحقق من أن نوع الخطة هو ACCOUNT
+    if (plan.type !== 'ACCOUNT') {
+      throw new AccountValidationError(
+        `Plan '${newPlanId}' is a ${plan.type} plan, not an ACCOUNT plan`
+      );
+    }
+
+    // 3. التحديث الذري لحساب المالك على نفس اتصال المعاملة
+    const result = await client.query<{
+      id: string;
+      name: string;
+      plan_id: string;
+      created_at: Date;
+    }>(
+      `UPDATE accounts
+       SET plan_id = $1
+       WHERE id = $2
+       RETURNING id, name, plan_id, created_at`,
+      [newPlanId, accountId]
     );
-  }
 
-  // 3. التحديث الذري لحساب المالك
-  const result = await pool.query<{
-    id: string;
-    name: string;
-    plan_id: string;
-    created_at: Date;
-  }>(
-    `UPDATE accounts
-     SET plan_id = $1
-     WHERE id = $2
-     RETURNING id, name, plan_id, created_at`,
-    [newPlanId, accountId]
-  );
+    // 4. فحص عدد الصفوف للتأكد من وجود الحساب وعدم الانهيار
+    if (result.rows.length === 0) {
+      throw new AccountNotFoundError('Account not found');
+    }
 
-  // 4. فحص عدد الصفوف للتأكد من وجود الحساب وعدم الانهيار
-  if (result.rows.length === 0) {
-    throw new AccountNotFoundError('Account not found');
-  }
-
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    name: row.name,
-    planId: row.plan_id,
-    createdAt: row.created_at.toISOString(),
-  };
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      name: row.name,
+      planId: row.plan_id,
+      createdAt: row.created_at.toISOString(),
+    };
+  });
 }
 

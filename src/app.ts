@@ -239,6 +239,9 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof UserNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
+        if (err instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
         console.error('Failed to update user plan due to an unexpected error');
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
@@ -327,6 +330,9 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(403).send({ error: err.message });
         }
         if (err instanceof NotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
         console.error('Failed to update custom plan due to an unexpected error');

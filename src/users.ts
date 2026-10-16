@@ -1,6 +1,7 @@
 // src/users.ts
 import crypto from 'node:crypto';
 import type pg from 'pg';
+import { type DbExecutor, withAccountLock } from './db.js';
 import { getAccessiblePlan } from './plans.js';
 
 export interface User {
@@ -162,11 +163,11 @@ export function validateUpdateUserPlanInput(body: unknown): UpdateUserPlanInput 
  * - التحقق من أن نوع الخطة هو USER حصراً
  */
 export async function validateAccessibleUserPlan(
-  pool: pg.Pool,
+  db: DbExecutor,
   planId: string,
   accountId: string
 ): Promise<void> {
-  const plan = await getAccessiblePlan(pool, planId, accountId);
+  const plan = await getAccessiblePlan(db, planId, accountId);
 
   if (!plan) {
     throw new UserValidationError('Plan not found or not accessible');
@@ -230,11 +231,11 @@ export async function createUser(
  * يعيد null إذا لم يكن المستخدم موجوداً أو كان يتبع لحساب آخر
  */
 export async function getUserById(
-  pool: pg.Pool,
+  db: DbExecutor,
   userId: string,
   accountId: string
 ): Promise<User | null> {
-  const result = await pool.query<UserRow>(
+  const result = await db.query<UserRow>(
     `SELECT id, account_id, plan_id, external_id, created_at
      FROM users
      WHERE id = $1 AND account_id = $2`,
@@ -257,9 +258,10 @@ export async function getUserById(
 
 /**
  * تغيير خطة مستخدم:
- * - التحقق أولاً من وجود المستخدم وانتمائه للحساب الموثق (إرجاع 404 للمفقود وغير المملوك)
- * - التحقق من إتاحة الخطة الجديدة وصحة نوعها USER
- * - تنفيذ UPDATE مقيداً بالمعرّف والحساب معاً
+ * - تنفيذ العملية داخل معاملة ذرية مع قفل الحساب عبر withAccountLock
+ * - التحقق أولاً بعد نيل القفل من وجود المستخدم وانتمائه للحساب الموثق
+ * - التحقق من إتاحة الخطة الجديدة وصحة نوعها USER على اتصال المعاملة
+ * - تنفيذ UPDATE مقيداً بالمعرّف والحساب معاً على نفس اتصال المعاملة
  * - تعديل plan_id فقط دون تعديل أي استهلاك سابق
  */
 export async function updateUserPlan(
@@ -268,34 +270,36 @@ export async function updateUserPlan(
   accountId: string,
   newPlanId: string
 ): Promise<User> {
-  // 1. التحقق أولاً من وجود المستخدم ضمن الحساب الموثق
-  const existingUser = await getUserById(pool, userId, accountId);
-  if (!existingUser) {
-    throw new UserNotFoundError('User not found');
-  }
+  return withAccountLock(pool, accountId, async (client) => {
+    // 1. التحقق أولاً من وجود المستخدم ضمن الحساب الموثق بعد نيل القفل
+    const existingUser = await getUserById(client, userId, accountId);
+    if (!existingUser) {
+      throw new UserNotFoundError('User not found');
+    }
 
-  // 2. التحقق من صلاحية ونوع الخطة الجديدة
-  await validateAccessibleUserPlan(pool, newPlanId, accountId);
+    // 2. التحقق من صلاحية ونوع الخطة الجديدة على اتصال المعاملة
+    await validateAccessibleUserPlan(client, newPlanId, accountId);
 
-  // 3. التحديث المباشر المقيد بمعرّف المستخدم والحساب
-  const result = await pool.query<UserRow>(
-    `UPDATE users
-     SET plan_id = $1
-     WHERE id = $2 AND account_id = $3
-     RETURNING id, account_id, plan_id, external_id, created_at`,
-    [newPlanId, userId, accountId]
-  );
+    // 3. التحديث المباشر المقيد بمعرّف المستخدم والحساب
+    const result = await client.query<UserRow>(
+      `UPDATE users
+       SET plan_id = $1
+       WHERE id = $2 AND account_id = $3
+       RETURNING id, account_id, plan_id, external_id, created_at`,
+      [newPlanId, userId, accountId]
+    );
 
-  if (result.rowCount === 0) {
-    throw new UserNotFoundError('User not found');
-  }
+    if (result.rowCount === 0) {
+      throw new UserNotFoundError('User not found');
+    }
 
-  const row = result.rows[0];
-  return {
-    id: row.id,
-    accountId: row.account_id,
-    planId: row.plan_id,
-    externalId: row.external_id,
-    createdAt: row.created_at.toISOString(),
-  };
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      planId: row.plan_id,
+      externalId: row.external_id,
+      createdAt: row.created_at.toISOString(),
+    };
+  });
 }

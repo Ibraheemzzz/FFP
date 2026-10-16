@@ -1,7 +1,9 @@
-// src/db.ts
 import pg from 'pg';
+import { AccountNotFoundError } from './errors.js';
 
 const { Pool } = pg;
+
+export type DbExecutor = pg.Pool | pg.PoolClient;
 
 export interface DatabasePoolOptions {
   max?: number;
@@ -73,5 +75,66 @@ export async function checkDatabaseHealth(pool: pg.Pool): Promise<boolean> {
       // تحرير الاتصال مرة واحدة حصراً: إعادة تدوير عند النجاح، أو استبعاد وإتلاف عند الفشل
       client.release(hasFailed);
     }
+  }
+}
+
+/**
+ * تنفيذ عملية داخل معاملة ذرية مع حجز قفل حصري لصف الحساب بمستوى عزل READ COMMITTED.
+ *
+ * الضمانات والحدود:
+ * - القفل ينسق حصراً العمليات التي تلتزم بقفل الحساب نفسه (SELECT ... FOR UPDATE على الحساب).
+ * - لا يمنع استعلامات القراءة العادية SELECT (وفق آلية MVCC).
+ * - ترتيب الوصول عبر الشبكة لا يضمن أسبقية التنفيذ؛ العملية التي تحوز القفل أولاً هي التي تكتمل أولاً.
+ * - تبدأ المعاملة بمستوى عزل صريح READ COMMITTED.
+ * - جميع القراءات المؤثرة في القرار تُنفّذ داخل المعاملة بعد نيل القفل حصراً.
+ * - في حالة النجاح: لا يُعاد النجاح إلا بعد اكتمال COMMIT بنجاح، ويُعاد الاتصال سليماً إلى المجموعة client.release(false).
+ * - في حالة الفشل أو انقطاع الاتصال: تجري محاولة ROLLBACK، ويُهدم الاتصال client.release(true) لمنع إعادة استخدامه بحالة غير موثوقة.
+ */
+export async function withAccountLock<T>(
+  pool: pg.Pool,
+  accountId: string,
+  operation: (client: pg.PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  let shouldDiscard = false;
+
+  try {
+    await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+
+    const lockResult = await client.query(
+      'SELECT id FROM accounts WHERE id = $1 FOR UPDATE',
+      [accountId]
+    );
+
+    if ((lockResult.rowCount ?? 0) === 0) {
+      throw new AccountNotFoundError('Account not found');
+    }
+
+    const result = await operation(client);
+
+    try {
+      await client.query('COMMIT');
+    } catch (commitErr) {
+      // فشل الالتزام يعني أن حالة الاتصال غير موثوقة أو غير معلومة، فيجب إتلافه
+      shouldDiscard = true;
+      throw commitErr;
+    }
+
+    return result;
+  } catch (err) {
+    // إذا لم يكن الفشل بسبب خطأ أثناء COMMIT، نحاول التراجع
+    if (!shouldDiscard) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        // فشل التراجع يعني أن الاتصال في حالة غير صالحة ويجب إتلافه
+        shouldDiscard = true;
+        console.error('Failed to rollback transaction; discarding connection', rollbackErr);
+      }
+    }
+    throw err;
+  } finally {
+    // إعادة الاتصال سليماً إلى المجموعة إذا كان صالحاً (false)، أو إتلافه إذا تعثر الالتزام أو التراجع (true)
+    client.release(shouldDiscard);
   }
 }
