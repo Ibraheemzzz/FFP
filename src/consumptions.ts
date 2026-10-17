@@ -1,7 +1,8 @@
 // src/consumptions.ts
 // منطق التحقق ومعالجة طلبات الاستهلاك (Consumption Handling & Validation)
 
-import type { ConsumptionRequest, RejectionReason } from './types.js';
+import type { ConsumptionRequest, RejectionReason, UsageSnapshot } from './types.js';
+import type { DbExecutor } from './db.js';
 
 /**
  * خطأ مخصص لفشل التحقق من مدخلات الاستهلاك
@@ -197,4 +198,81 @@ export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvalua
   }
 
   return { accepted: true };
+}
+
+/**
+ * حساب لقطة الاستخدام (المستهلك والمتبقي)
+ * 
+ * القواعد المطبقة:
+ * - المدخلات: أعداد صحيحة آمنة غير سالبة (>= 0) تم التحقق منها مسبقاً.
+ * - المتبقي: يُحسب ديناميكياً بالمعادلة Math.max(0, monthlyLimit - consumedUnits).
+ * - لا يكون المتبقي سالباً أبداً؛ إذا كان المستهلك أكبر من الحد (بعد تخفيض الخطة)،
+ *   فإن المتبقي هو 0، ويظل المستهلك يعكس الحقيقة التاريخية دون تصفير.
+ */
+export function calculateUsageSnapshot(
+  monthlyLimit: number,
+  consumedUnits: number
+): UsageSnapshot {
+  return {
+    consumed: consumedUnits,
+    remaining: Math.max(0, monthlyLimit - consumedUnits),
+  };
+}
+
+/**
+ * قراءة الاستهلاك الشهري للحساب للشهر المحدد
+ * 
+ * ملاحظات معمارية:
+ * 1. عمود total_units من نوع BIGINT ويُرجع كنص عبر pg؛ يتم تحويله إلى number
+ *    بأمان بناءً على قيد النطاق الآمن في الجدول (total_units <= 9007199254740991).
+ * 2. إرجاع 0 يعني غياب صف العداد فقط (شهر جديد لم يُسجل فيه استهلاك).
+ * 3. في حال حدوث أي خطأ في قاعدة البيانات، ينتقل الخطأ للمستدعي ولا يُحوّل إلى صفر.
+ */
+export async function getAccountMonthlyUsage(
+  db: DbExecutor,
+  accountId: string,
+  yearMonth: string
+): Promise<number> {
+  const query = `
+    SELECT total_units
+    FROM account_monthly_usage
+    WHERE account_id = $1 AND year_month = $2;
+  `;
+  const result = await db.query<{ total_units: string }>(query, [accountId, yearMonth]);
+
+  if (result.rows.length === 0) {
+    return 0;
+  }
+
+  return Number(result.rows[0].total_units);
+}
+
+/**
+ * قراءة الاستهلاك الشهري للمستخدم للشهر المحدد مع فرض عزل الحسابات
+ * 
+ * ملاحظات معمارية:
+ * 1. الاستعلام مقيّد بـ account_id و user_id و year_month لضمان عزل المستأجرين.
+ * 2. إرجاع 0 لا يثبت وجود المستخدم أو ملكيته، لأن غياب العداد أو عدم تطابق
+ *    الحساب كلاهما يُعيد صفوفاً فارغة؛ يجب على المسارات التحقق من وجود المستخدم
+ *    وملكيته أولاً قبل الاعتماد على نتيجة العداد.
+ * 3. في حال حدوث خطأ في قاعدة البيانات، ينتقل الخطأ للمستدعي ولا يُحوّل إلى صفر.
+ */
+export async function getUserMonthlyUsage(
+  db: DbExecutor,
+  accountId: string,
+  userId: string,
+  yearMonth: string
+): Promise<number> {
+  const query = `
+    SELECT total_units
+    FROM user_monthly_usage
+    WHERE account_id = $1 AND user_id = $2 AND year_month = $3;
+  `;
+  const result = await db.query<{ total_units: string }>(query, [accountId, userId, yearMonth]);
+
+  if (result.rows.length === 0) {
+    return 0;
+  }
+
+  return Number(result.rows[0].total_units);
 }

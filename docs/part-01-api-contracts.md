@@ -847,5 +847,38 @@ The response returns the full array of matching plans without pagination in this
 5. **Scope Notice & Separation:**
    - Part 18 evaluates policy rules only. Usage snapshot computation (`UsageSnapshot` with `remaining` and `consumed` balances) and counter persistence belong to Part 19 and Part 20.
 
+---
+
+## 15. Consumed and Remaining Quotas: `calculateUsageSnapshot` & Monthly Usage Queries (Part 19)
+
+### 15.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Dynamic Remaining Calculation:**
+   - Remaining quota is never stored in the database. It is calculated dynamically upon query or evaluation using:
+     ```typescript
+     remaining = Math.max(0, monthlyLimit - consumedUnits)
+     ```
+   - **Rationale:** Storing both consumed and remaining amounts creates duplicate state prone to synchronization drift under concurrency. Persisting only cumulative consumed units (`total_units`) preserves a single source of truth.
+2. **Non-Negative Remaining Guarantee & Historical Preservation on Downgrades:**
+   - Remaining quota is strictly floored at 0 and will never be negative.
+   - If an account or user plan is downgraded to a limit below the already consumed units (`consumed > monthlyLimit`), `calculateUsageSnapshot` outputs `remaining: 0`.
+   - The historical cumulative consumed amount is strictly preserved and never decremented, truncated, or zeroed.
+3. **Database Counter Storage & BIGINT Parsing:**
+   - The `total_units` columns in `account_monthly_usage` and `user_monthly_usage` are stored as `BIGINT`.
+   - In Node.js `pg`, 64-bit integers are returned as strings. Both `getAccountMonthlyUsage` and `getUserMonthlyUsage` parse them to native JavaScript `number` using `Number(rows[0].total_units)`. This is mathematically safe because database check constraints cap values at `Number.MAX_SAFE_INTEGER` (`9,007,199,254,740,991`).
+4. **Absence of Counter Rows vs Error Propagation:**
+   - Returning `0` from `getAccountMonthlyUsage` or `getUserMonthlyUsage` signifies exclusively the absence of a counter row for the requested month (`rows.length === 0`).
+   - Query failures (database disconnect, syntax errors) are never caught or converted to `0`; they are strictly rethrown to the caller.
+5. **Tenant Isolation & Existence Disclaimers in `getUserMonthlyUsage`:**
+   - `getUserMonthlyUsage` enforces multi-tenant boundary checks:
+     ```sql
+     WHERE account_id = $1 AND user_id = $2 AND year_month = $3
+     ```
+   - **Critical Architecture Notice:** Returning `0` does **not** prove that the user exists or belongs to the requesting account; an unseeded user and a non-existent or foreign user both yield 0 rows. Future end-to-end consumption routes must verify user existence and account ownership (via `getUserById`) prior to trusting counter values.
+6. **Concurrency & Transaction Leased Client:**
+   - The two independent counter queries do not guarantee a consistent cross-entity snapshot on their own under concurrent traffic.
+   - When wired into the end-to-end consumption pipeline in Part 20/21, both queries will execute on the same transaction connection (`PoolClient`) strictly **after acquiring the account-level row lock**.
+
+
 
 
