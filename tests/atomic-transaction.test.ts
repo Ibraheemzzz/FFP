@@ -534,7 +534,7 @@ async function runAtomicTransactionTests(): Promise<void> {
     }
 
     // ==========================================
-    // 6. اختبار سلوك تكرار requestId وإلغاء المعاملة (User Requirement 6)
+    // 6. اختبار سلوك تكرار requestId وإعادة الرد الأصلي (Part 22 Update)
     // ==========================================
     {
       const accountId = `acc_test_p20_dup_${crypto.randomBytes(4).toString('hex')}`;
@@ -563,27 +563,18 @@ async function runAtomicTransactionTests(): Promise<void> {
       );
       assert.equal(dec1.accepted, true);
 
-      // الطلب الثاني بنفس requestId يفشل بقيد التفرّد في هذه المرحلة (قبل الجزء 22)
-      let duplicateError: unknown = null;
-      try {
-        await executeConsumption(
-          pool,
-          accountId,
-          {
-            userId,
-            units: 8,
-            requestId: 'req_p20_duplicate_test',
-          },
-          { clock: () => new Date('2026-10-15T18:05:00.000Z') }
-        );
-      } catch (err) {
-        duplicateError = err;
-      }
-
-      assert.ok(duplicateError, 'Expected duplicate requestId to throw unique constraint error');
-      const pgErr = duplicateError as { code?: string; constraint?: string };
-      assert.equal(pgErr.code, '23505', 'PostgreSQL error code must be 23505 (unique_violation)');
-      assert.equal(pgErr.constraint, 'uq_consumption_account_request');
+      // الطلب الثاني بنفس requestId والبيانات المتطابقة ينجح كإعادة متطابقة ويعيد نفس الرد الأصلي
+      const dec2 = await executeConsumption(
+        pool,
+        accountId,
+        {
+          userId,
+          units: 8,
+          requestId: 'req_p20_duplicate_test',
+        },
+        { clock: () => new Date('2026-10-15T18:05:00.000Z') }
+      );
+      assert.deepEqual(dec2, dec1, 'Idempotent replay must return the exact same original response body');
 
       // إثبات أن العدادات لم تزد مرة ثانية وتوقفت عند 8
       const accUsage = await pool.query<{ total_units: string }>(
@@ -598,7 +589,14 @@ async function runAtomicTransactionTests(): Promise<void> {
       );
       assert.equal(Number(usrUsage.rows[0].total_units), 8, 'User counter must not double');
 
-      console.log('✔ Test 6: Duplicate requestId rejected by unique constraint and transaction rolled back');
+      // التحقق من وجود سجل استهلاك واحد فقط في قاعدة البيانات
+      const recCount = await pool.query<{ count: string }>(
+        'SELECT COUNT(*) AS count FROM consumption_records WHERE account_id = $1 AND request_id = $2',
+        [accountId, 'req_p20_duplicate_test']
+      );
+      assert.equal(Number(recCount.rows[0].count), 1, 'Exactly one consumption record must exist');
+
+      console.log('✔ Test 6: Duplicate requestId returns original decision with invariant counters and single record');
     }
 
     // ==========================================

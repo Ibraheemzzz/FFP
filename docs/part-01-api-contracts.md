@@ -952,6 +952,55 @@ The response returns the full array of matching plans without pagination in this
    - The lock is held strictly for the minimum necessary duration: in-memory rule evaluation, counter UPSERTs, and ledger insertion. No external network I/O or client communication occurs while holding the lock.
    - Statement and connection timeouts (`statement_timeout`, `query_timeout`) prevent orphaned locks in the event of unexpected client disconnections.
 
+---
+
+## 18. Idempotency Key & Deduplication Protocol: `requestId` (Part 22)
+
+### 18.1 Client Responsibility Standard (`[إلزامي]`)
+- **Caller Obligation:** The calling application (Account tenant) is strictly responsible for reusing the identical `requestId` when retrying the same operation after network timeouts, client disconnects, or dropped HTTP responses.
+- **Fresh Request Semantics:** Submitting a newly generated `requestId` is treated by the service as an independent, fresh consumption request, which will consume quota and evaluate limits anew.
+
+### 18.2 Architectural Principles & Deduplication Semantics (`[مرن — برّر]`)
+
+1. **Pre-Evaluation Check Order:**
+   - Immediately after acquiring the account row lock, and prior to querying user records, plan definitions, or usage counters, the service queries:
+     ```sql
+     SELECT user_id, requested_units, response_body
+     FROM consumption_records
+     WHERE account_id = $1 AND request_id = $2;
+     ```
+   - **Performance & Consistency:** Bypasses in-memory rule evaluations and redundant queries entirely for retries, directly preserving the historical decision snapshot.
+
+2. **Idempotent Replay (Identical Request Parameters):**
+   - If an existing record is found matching both `user_id === request.userId` and `requested_units === request.units`:
+     - The stored `response_body` is returned immediately as the `ConsumptionDecision`.
+     - The transaction terminates cleanly with `COMMIT`.
+     - **Database Invariance:** Monthly counters in `account_monthly_usage` and `user_monthly_usage` are NOT modified. No new record is inserted into `consumption_records`. The original record's `processed_at`, `response_body`, and `decision_context` remain strictly immutable.
+
+3. **Conflict Detection & Payload Mismatch (`RequestIdConflictError`):**
+   - If an existing record matches the `requestId` within the account, but differs in `userId` or `units`:
+     - The service throws `RequestIdConflictError` with message: `'requestId has already been used with different request data'`.
+     - In the HTTP route layer (Part 26+), this error maps deterministically to `409 Conflict`.
+     - The transaction rolls back cleanly, preserving pre-existing database state and counters intact.
+
+4. **Historical Invariance of Rejected Decisions:**
+   - If an earlier request was evaluated and rejected (e.g. due to per-request limit or monthly quota exhaustion), that rejection decision was committed to `consumption_records`.
+   - Replaying the identical request with the same `requestId` continues to return the identical rejection response, even if the tenant upgraded their plan limits or crossed into a new calendar month in the interim.
+   - To benefit from newly upgraded limits or a new monthly allowance, the caller must submit a new request with a distinct `requestId`.
+
+5. **Cross-Tenant Composite Uniqueness:**
+   - The uniqueness guarantee is scoped strictly to `(account_id, request_id)` via `CONSTRAINT uq_consumption_account_request`.
+   - Distinct accounts (Tenant A and Tenant B) can safely generate and submit identical `requestId` strings without lock contention, collision, or cross-tenant interference.
+
+6. **Clean Retry After Pre-Commit Rollback:**
+   - If an execution fails prior to `COMMIT` (e.g. database error, constraint failure, or missing user), the atomic transaction rolls back completely.
+   - Because no row exists in `consumption_records` following `ROLLBACK`, re-submitting the same `requestId` after resolving the root cause proceeds normally as a fresh, uncommitted request.
+
+7. **Replay Across Calendar Month Boundaries:**
+   - If an October request (`year_month = '2026-10'`) is replayed in November (`year_month = '2026-11'`), the service returns the October decision payload.
+   - Zero rows or counters are created for November (`2026-11`), strictly preventing cross-month leakage.
+
+
 
 
 

@@ -25,6 +25,17 @@ export class ConsumptionValidationError extends Error {
 }
 
 /**
+ * خطأ تعارض معرّف الطلب: يُرمى عند إعادة استخدام نفس requestId لطلب يحمل بيانات مختلفة
+ * (يُترجم لاحقاً إلى HTTP 409 Conflict عند ربط مسار الـ API)
+ */
+export class RequestIdConflictError extends Error {
+  constructor(message = 'requestId has already been used with different request data') {
+    super(message);
+    this.name = 'RequestIdConflictError';
+  }
+}
+
+/**
  * قائمة الحقول المسموح بها صراحة في طلب الاستهلاك لمنع أي حقول إضافية أو خاطئة
  */
 const ALLOWED_CONSUMPTION_FIELDS = new Set(['userId', 'units', 'requestId']);
@@ -334,12 +345,42 @@ async function processConsumption(
   request: ConsumptionRequest,
   options?: ExecuteConsumptionOptions
 ): Promise<ConsumptionDecision> {
-  // 1. استدعاء الساعة مرة واحدة فقط بعد حيازة القفل لتحديد لحظة المعالجة وشهر المحاسبة
+  // 1. فحص عدم التكرار (Idempotency Check) فور نيل القفل وقبل أي عملية أخرى
+  const existingRecordRes = await client.query<{
+    user_id: string;
+    requested_units: string;
+    response_body: ConsumptionDecision;
+  }>(
+    `SELECT user_id, requested_units, response_body
+     FROM consumption_records
+     WHERE account_id = $1 AND request_id = $2;`,
+    [accountId, request.requestId]
+  );
+
+  if (existingRecordRes.rows.length > 0) {
+    const existing = existingRecordRes.rows[0];
+
+    // أ) فحص التعارض: نفس معرّف الطلب ولكن ببيانات مختلفة (مستخدم مختلف أو وحدات مختلفة)
+    if (
+      existing.user_id !== request.userId ||
+      Number(existing.requested_units) !== request.units
+    ) {
+      throw new RequestIdConflictError(
+        'requestId has already been used with different request data'
+      );
+    }
+
+    // ب) إعادة متطابقة (Idempotent Replay): إرجاع الرد التاريخي الأصلي فوراً
+    // تنتهي المعاملة بـ COMMIT سليم دون المساس بالعدادات أو إعادة تقييم القواعد
+    return existing.response_body;
+  }
+
+  // 2. استدعاء الساعة مرة واحدة فقط بعد حيازة القفل لتحديد لحظة المعالجة وشهر المحاسبة
   const clock = options?.clock ?? (() => new Date());
   const processedAt = clock();
   const yearMonth = getUtcYearMonth(processedAt);
 
-  // 2. التحقق من وجود المستخدم وتبعيته للحساب الموثق
+  // 3. التحقق من وجود المستخدم وتبعيته للحساب الموثق
   const user = await getUserById(client, request.userId, accountId);
   if (!user) {
     throw new UserNotFoundError('User not found');
