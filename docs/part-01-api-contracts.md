@@ -794,4 +794,25 @@ The response returns the full array of matching plans without pagination in this
    - **Part 21:** أقفال التزامن (Concurrency & Account Locking Protocol).
    - **Part 22:** منع تكرار الاستهلاك (Deduplication & Idempotent Retry Engine via `requestId`).
 
+---
+
+## 13. Processing Month Determination: `getUtcYearMonth` (Part 17)
+
+### 13.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Strict UTC Calendar Month Standard:**
+   - The quota tracking cycle is strictly governed by the Gregorian calendar month in UTC (`00:00:00.000Z` on the 1st of the month to `23:59:59.999Z` on the last day of the month).
+   - Local system or client timezones and rolling 30-day intervals are explicitly rejected to prevent cross-timezone accounting discrepancies.
+   - The month is represented in string format as `YYYY-MM` (e.g., `'2026-10'`), matching the storage format and database check constraint on monthly usage tables.
+2. **Intentional Application Year Range (1000–9999):**
+   - The application enforces a 4-digit positive year range `1000 <= year <= 9999`.
+   - **Architecture Distinction:** This is an intentional application-level design choice (`[مرن — برّر]`) suitable for modern service lifecycles, and is not a constraint strictly imposed by the database regular expression (`CHECK (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')`, which verifies 4 numeric digits). The application bounds ensure clean calendar semantics and prevent zero/negative year anomalies.
+3. **Single Timestamp Capture Post-Lock:**
+   - In the future end-to-end consumption transaction (Parts 20 & 21), execution will capture a single, immutable timestamp `processedAt = new Date()` strictly **after acquiring the account lock**.
+   - This exact same timestamp instance is passed to `getUtcYearMonth(processedAt)` to determine the accounting period, and persisted directly to `consumption_records.processed_at`.
+   - The system clock is strictly **never called twice** for these two purposes, preventing split-second month transition anomalies where usage would be evaluated under one month but recorded under another.
+4. **Scope & Integration Notice:**
+   - Part 17 focuses solely on pure calendar month extraction, edge case verification, and UTC timezone normalization via `getUtcYearMonth`.
+   - It deliberately excludes database counter queries (`account_monthly_usage` and `user_monthly_usage`), which are scheduled for Part 19, and does not expose intermediate HTTP endpoints.
+
 

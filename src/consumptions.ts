@@ -99,3 +99,28 @@ export function validateConsumptionInput(body: unknown): ConsumptionRequest {
     requestId: trimmedRequestId,
   };
 }
+
+/**
+ * استخراج السنة والشهر بتوقيت UTC بصيغة YYYY-MM
+ * 
+ * القواعد المطبقة:
+ * 1. التحقق من صلاحية كائن التاريخ (ليس Invalid Date أو NaN).
+ * 2. التحقق من نطاق السنة: حصر السنة بين 1000 و 9999 كخيار تطبيقي ملائم للخدمة يضمن
+ *    تمثيل السنة بأربعة أرقام موجبة تتطابق مع متطلبات التخزين وقيد قاعدة البيانات:
+ *    CHECK (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+ * 3. استخراج الشهر بتوقيت UTC (0-11) وإكماله إلى رقمين بصفر في البداية (01-12).
+ * 4. استخدام الوقت الحالي افتراضياً عند عدم تمرير وسيط تاريخ.
+ */
+export function getUtcYearMonth(date: Date = new Date()): string {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    throw new RangeError('Invalid date provided');
+  }
+
+  const year = date.getUTCFullYear();
+  if (year < 1000 || year > 9999) {
+    throw new RangeError('Year must be a 4-digit positive integer between 1000 and 9999');
+  }
+
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
