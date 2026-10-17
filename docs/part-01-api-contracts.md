@@ -815,4 +815,37 @@ The response returns the full array of matching plans without pagination in this
    - Part 17 focuses solely on pure calendar month extraction, edge case verification, and UTC timezone normalization via `getUtcYearMonth`.
    - It deliberately excludes database counter queries (`account_monthly_usage` and `user_monthly_usage`), which are scheduled for Part 19, and does not expose intermediate HTTP endpoints.
 
+---
+
+## 14. Quota Rules Evaluation: `evaluateQuotaRules` (Part 18)
+
+### 14.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Pure Domain Function Isolation:**
+   - Quota rules evaluation is encapsulated in `evaluateQuotaRules` in `src/consumptions.ts`.
+   - It is an entirely pure domain function: no database calls, no network I/O, and no side effects.
+   - **Input Contract Specification:** The function expects pre-validated domain inputs: `requestedUnits` must be a positive safe integer (`> 0`), while plan limits and consumed counters must be non-negative safe integers (`>= 0`). It is an internal evaluation engine and does not replace the runtime input validator `validateConsumptionInput`.
+2. **Deterministic Evaluation Order (`[مرن — برّر]`):**
+   - When a request violates multiple rules simultaneously, the service deterministically reports a single decisive reason following this prioritized order:
+     1. **Account Per-Request Limit:** `scope: 'account'`, `rule: 'max_per_request'`
+     2. **User Per-Request Limit:** `scope: 'user'`, `rule: 'max_per_request'`
+     3. **Account Monthly Allowance:** `scope: 'account'`, `rule: 'monthly_allowance'`
+     4. **User Monthly Allowance:** `scope: 'user'`, `rule: 'monthly_allowance'`
+   - **Rationale:** Instantaneous single-request bounds are evaluated prior to cumulative monthly balances. Furthermore, the account-level boundary takes precedence as the overarching shared ceiling before individual user bounds.
+3. **Subtraction-Based Monthly Comparison:**
+   - Monthly allowance rules are evaluated using subtraction rather than addition:
+     ```typescript
+     context.requestedUnits > context.accountMonthlyLimit - context.accountConsumedUnits
+     context.requestedUnits > context.userMonthlyLimit - context.userConsumedUnits
+     ```
+   - **Safety Guarantees:**
+     - **Safe Integer Arithmetic:** Avoids adding two large numbers near `Number.MAX_SAFE_INTEGER`, eliminating integer overflow risks.
+     - **Natural Downgrade Handling:** If an account or user plan was downgraded below current accumulated usage (`consumed > monthlyLimit`), `limit - consumed` results in a negative value, cleanly and immediately rejecting any positive request (`requestedUnits > negative`) without special branching.
+4. **All-or-Nothing Decision:**
+   - If limits permit, the request is accepted in its entirety (`accepted: true`).
+   - If any limit is exceeded, the request is rejected in its entirety (`accepted: false`). Partial deductions are never permitted.
+5. **Scope Notice & Separation:**
+   - Part 18 evaluates policy rules only. Usage snapshot computation (`UsageSnapshot` with `remaining` and `consumed` balances) and counter persistence belong to Part 19 and Part 20.
+
+
 

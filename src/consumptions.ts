@@ -1,7 +1,7 @@
 // src/consumptions.ts
 // منطق التحقق ومعالجة طلبات الاستهلاك (Consumption Handling & Validation)
 
-import type { ConsumptionRequest } from './types.js';
+import type { ConsumptionRequest, RejectionReason } from './types.js';
 
 /**
  * خطأ مخصص لفشل التحقق من مدخلات الاستهلاك
@@ -123,4 +123,78 @@ export function getUtcYearMonth(date: Date = new Date()): string {
 
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
   return `${year}-${month}`;
+}
+
+/**
+ * سياق مدخلات تقييم القواعد الأربع للحصص
+ * 
+ * اشتراطات المدخلات:
+ * - requestedUnits: عدد صحيح آمن موجب تماماً (> 0).
+ * - الحدود والمستهلك: أعداد صحيحة آمنة غير سالبة (>= 0).
+ * ملاحظة: هذه دالة نطاق داخلية تستقبل بيانات تم التحقق من صحتها مسبقاً،
+ * وليست بديلاً عن دالة التحقق من المدخلات validateConsumptionInput.
+ */
+export interface QuotaEvaluationContext {
+  requestedUnits: number;
+  accountMonthlyLimit: number;
+  accountPerRequestLimit: number;
+  userMonthlyLimit: number;
+  userPerRequestLimit: number;
+  accountConsumedUnits: number;
+  userConsumedUnits: number;
+}
+
+/**
+ * نتيجة تقييم القواعد: إما قبول الطلب أو رفضه مع تحديد السبب الصريح
+ */
+export type QuotaEvaluationResult =
+  | { accepted: true }
+  | { accepted: false; reason: RejectionReason };
+
+/**
+ * دالة تقييم قواعد الحصص الأربع لطلب الاستهلاك
+ * 
+ * القواعد المطبقة وترتيب الفحص الحتمي:
+ * 1. حد الحساب لكل طلب: requestedUnits > accountPerRequestLimit
+ * 2. حد المستخدم لكل طلب: requestedUnits > userPerRequestLimit
+ * 3. حصة الحساب الشهرية: requestedUnits > accountMonthlyLimit - accountConsumedUnits
+ * 4. حصة المستخدم الشهرية: requestedUnits > userMonthlyLimit - userConsumedUnits
+ * 
+ * استخدام المقارنة بالطرح (Limit - Consumed) يمنع فيضان الأعداد خارج النطاق الآمن،
+ * ويتعامل تلقائياً وبدقة مع حالات تخفيض الخطة (حيث يكون الفرق سالباً ويُرفض أي طلب موجب).
+ */
+export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvaluationResult {
+  // 1. فحص حد الحساب لكل طلب
+  if (context.requestedUnits > context.accountPerRequestLimit) {
+    return {
+      accepted: false,
+      reason: { scope: 'account', rule: 'max_per_request' },
+    };
+  }
+
+  // 2. فحص حد المستخدم لكل طلب
+  if (context.requestedUnits > context.userPerRequestLimit) {
+    return {
+      accepted: false,
+      reason: { scope: 'user', rule: 'max_per_request' },
+    };
+  }
+
+  // 3. فحص الحصة الشهرية للحساب بالمقارنة بالطرح
+  if (context.requestedUnits > context.accountMonthlyLimit - context.accountConsumedUnits) {
+    return {
+      accepted: false,
+      reason: { scope: 'account', rule: 'monthly_allowance' },
+    };
+  }
+
+  // 4. فحص الحصة الشهرية للمستخدم بالمقارنة بالطرح
+  if (context.requestedUnits > context.userMonthlyLimit - context.userConsumedUnits) {
+    return {
+      accepted: false,
+      reason: { scope: 'user', rule: 'monthly_allowance' },
+    };
+  }
+
+  return { accepted: true };
 }
