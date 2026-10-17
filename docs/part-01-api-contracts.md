@@ -879,6 +879,49 @@ The response returns the full array of matching plans without pagination in this
    - The two independent counter queries do not guarantee a consistent cross-entity snapshot on their own under concurrent traffic.
    - When wired into the end-to-end consumption pipeline in Part 20/21, both queries will execute on the same transaction connection (`PoolClient`) strictly **after acquiring the account-level row lock**.
 
+---
+
+## 16. The Atomic Transaction: `executeConsumption` (Part 20)
+
+### 16.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **All-or-Nothing Guarantee Across Three Database Writes:**
+   - In consumption execution, three discrete database operations are inextricably bound:
+     1. Updating the account-level monthly counter (`account_monthly_usage`).
+     2. Updating the user-level monthly counter (`user_monthly_usage`).
+     3. Inserting the persistent audit ledger entry (`consumption_records`).
+   - If any step fails (e.g., connection drop, constraint violation, or server fault), PostgreSQL executes `ROLLBACK`, guaranteeing that counters and ledger rows are never partially modified.
+
+2. **Business Decision Commit vs. Error Rollback:**
+   - **Business Policy Rejection (`accepted: false`):** When a request exceeds a quota rule, this is a legitimate domain decision returned as a normal result value (`ConsumptionDecision`), not thrown as an error. Consequently, the transaction completes normally and successfully commits (`COMMIT`), leaving usage counters completely untouched while persisting the rejected decision, reason, snapshots, and `decision_context` into `consumption_records`.
+   - **Error Rollback:** Any error thrown inside the operation—whether an application/domain exception (such as `UserNotFoundError` or missing plan configuration) or an infrastructure/database fault (connection drop, unique constraint violation, SQL error)—aborts the operation and triggers `ROLLBACK`, guaranteeing that any preceding counter increments or ledger insertions are completely undone.
+
+3. **Clock Injection Post-Lock:**
+   - Time is never accepted from the client request body.
+   - The time of processing is determined via a clock provider function (`clock?: () => Date`), called strictly **once** after the account row lock is acquired.
+   - The identical `Date` instance governs both the accounting month (`yearMonth = getUtcYearMonth(processedAt)`) and the immutable decision timestamp (`consumption_records.processed_at`), preventing cross-month race discrepancies.
+
+4. **Post-Lock Plan and Identity Verification:**
+   - The account's current plan assignment is read directly from the database under the row lock (`SELECT plan_id FROM accounts WHERE id = $1`), never trusted from stale authentication caches.
+   - Both account and user plans are verified for existence, accessibility to the tenant, and strict plan type compliance (`accountPlan.type === 'ACCOUNT'` and `userPlan.type === 'USER'`). Missing or incompatible plans represent internal data integrity corruption and abort the transaction.
+
+5. **Historical Decision Context Invariance (`decision_context`):**
+   - Migration `003_add_decision_context_to_consumption_records.sql` introduces a `decision_context JSONB NOT NULL` column.
+   - Every consumption record explicitly captures the exact plan IDs, `monthlyLimit`, `perRequestLimit`, and pre-transaction usage counters in effect at the moment of decision.
+   - **Immutability Guarantee:** Subsequent changes to plan definitions (e.g. lowering or raising limits in Part 15) leave historical `response_body` and `decision_context` completely unchanged.
+   - **Contract Protection:** Storing this audit snapshot in `decision_context` prevents polluting `response_body`, keeping the external HTTP response payload 100% faithful to the agreed API contract.
+
+6. **Request ID Collision Behavior Prior to Part 22:**
+   - At this stage, re-submitting an identical `requestId` within the same account triggers the PostgreSQL unique constraint `uq_consumption_account_request`.
+   - Because this collision occurs within the transaction, the entire operation rolls back: usage counters do not increment a second time, and the request fails cleanly.
+   - Comprehensive idempotent replay without error is the dedicated scope of Part 22.
+
+7. **Accurate Connection Cleanup & Indeterminate Outcome Semantics:**
+   - In `withAccountLock`, standard transaction errors trigger `ROLLBACK`. Upon a successful rollback, the connection remains clean and is returned to the pool (`client.release(false)`).
+   - Connection disposal (`client.release(true)`) is strictly reserved for failures during `COMMIT` or failures during `ROLLBACK`.
+   - If a network connection drops during `COMMIT`, the outcome is treated as indeterminate (`500 Internal Server Error`), acknowledging that PostgreSQL may have committed or aborted the transaction before the socket severed.
+
+
 
 
 

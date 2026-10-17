@@ -295,12 +295,12 @@ async function runAllMigrationTests(): Promise<void> {
     ]);
 
     const totalApplied = res1.applied.length + res2.applied.length;
-    assert.equal(totalApplied, 2, 'All migrations must be applied exactly once across concurrent runs');
+    assert.equal(totalApplied, 3, 'All migrations must be applied exactly once across concurrent runs');
 
     const checkEntries = await concurrentPool1.query<{ count: string }>(
       'SELECT count(*) FROM schema_migrations'
     );
-    assert.equal(checkEntries.rows[0].count, '2', 'schema_migrations must have exactly 2 records');
+    assert.equal(checkEntries.rows[0].count, '3', 'schema_migrations must have exactly 3 records');
     console.log('✔ Concurrent migration runners synchronized safely via advisory locks');
   } finally {
     // Ensure all test pools are closed before attempting to drop test databases
