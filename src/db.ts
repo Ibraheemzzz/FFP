@@ -88,7 +88,7 @@ export async function checkDatabaseHealth(pool: pg.Pool): Promise<boolean> {
  * - تبدأ المعاملة بمستوى عزل صريح READ COMMITTED.
  * - جميع القراءات المؤثرة في القرار تُنفّذ داخل المعاملة بعد نيل القفل حصراً.
  * - في حالة النجاح: لا يُعاد النجاح إلا بعد اكتمال COMMIT بنجاح، ويُعاد الاتصال سليماً إلى المجموعة client.release(false).
- * - في حالة الفشل أو انقطاع الاتصال: تجري محاولة ROLLBACK، ويُهدم الاتصال client.release(true) لمنع إعادة استخدامه بحالة غير موثوقة.
+ * - في حالة الفشل: تجري محاولة ROLLBACK؛ إذا نجحت يُعاد الاتصال سليماً للمجموعة client.release(false)، وإذا تعثر الالتزام أو التراجع يُهدم الاتصال client.release(true) لمنع إعادة استخدامه بحالة غير موثوقة.
  */
 export async function withAccountLock<T>(
   pool: pg.Pool,

@@ -921,6 +921,38 @@ The response returns the full array of matching plans without pagination in this
    - Connection disposal (`client.release(true)`) is strictly reserved for failures during `COMMIT` or failures during `ROLLBACK`.
    - If a network connection drops during `COMMIT`, the outcome is treated as indeterminate (`500 Internal Server Error`), acknowledging that PostgreSQL may have committed or aborted the transaction before the socket severed.
 
+---
+
+## 17. Concurrency & Account Locking Protocol: `withAccountLock` (Part 21)
+
+### 17.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Pessimistic Account-Level Locking Standard:**
+   - To eliminate race conditions, double spending, and quota over-allocation across both shared account quotas and individual user quotas, all operations that evaluate consumption or alter plan configurations acquire an exclusive row lock on the parent account:
+     ```sql
+     BEGIN ISOLATION LEVEL READ COMMITTED;
+     SELECT id FROM accounts WHERE id = $1 FOR UPDATE;
+     ```
+   - **Architecture Rationale:** Locking at the user level alone is strictly insufficient because multiple concurrent users under the same account share the overarching account monthly quota (`account_monthly_usage`). The account row acts as the single serialization point for all mutating operations within that tenant.
+
+2. **Deterministic Serialization & Zero Overspending:**
+   - When concurrent requests compete for a limited remaining quota (e.g., 100 concurrent requests for 10 available units), transactions queue and serialize sequentially through the account row lock.
+   - Exactly the available quota units are accepted, and subsequent requests are cleanly rejected with `accepted: false` due to exhausted monthly allowance. The final accumulated usage counter in the database matches the allowance exactly, demonstrating zero overspending.
+
+3. **Coordinated Ordering Between Plan Changes and Consumption:**
+   - Because `updateAccountPlan`, `updateUserPlan`, `updateCustomPlan`, and `executeConsumption` all adhere to the identical `withAccountLock` protocol on the tenant account, plan modifications and consumption operations serialize predictably without circular waits or deadlocks within the tenant.
+   - **Case A (Plan Update First):** If a plan update acquires the lock first, subsequent consumption requests wait. Once the plan update commits, the unblocked consumption evaluates under the newly committed limits.
+   - **Case B (Consumption First):** If a consumption transaction acquires the lock first, a plan update waits. The consumption evaluates under the pre-existing limits, and the plan modification executes immediately afterward without altering the completed decision.
+
+4. **Cross-Tenant Non-Blocking Independence:**
+   - Different accounts have distinct primary keys (`id`). Row-level `SELECT ... FOR UPDATE` locks on Account A never block or serialize transactions on Account B.
+   - Multi-tenant workloads execute in true parallel fashion across available pool connections, sharing database engine capacity without lock contention.
+
+5. **Bounded Contention & Short Transaction Lifecycles:**
+   - The lock is held strictly for the minimum necessary duration: in-memory rule evaluation, counter UPSERTs, and ledger insertion. No external network I/O or client communication occurs while holding the lock.
+   - Statement and connection timeouts (`statement_timeout`, `query_timeout`) prevent orphaned locks in the event of unexpected client disconnections.
+
+
 
 
 
