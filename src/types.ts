@@ -62,3 +62,37 @@ export interface RejectedDecision {
  * إما قرار مقبول يحمل الأرصدة، أو قرار مرفوض يحمل سبب الرفض مع الأرصدة القائمة
  */
 export type ConsumptionDecision = AcceptedDecision | RejectedDecision;
+
+/**
+ * ملخص خطة الاستخدام المعروضة في ردود الاستخدام الحالي
+ */
+export interface UsagePlanSummary {
+  id: string;
+  name: string;
+  type: 'ACCOUNT' | 'USER';
+  monthlyLimit: number;
+  perRequestLimit: number;
+}
+
+/**
+ * رد استخدام الحساب الحالي (GET /account/usage)
+ */
+export interface AccountUsageResponse {
+  accountId: string;
+  yearMonth: string;
+  plan: UsagePlanSummary;
+  usage: UsageSnapshot;
+}
+
+/**
+ * رد استخدام المستخدم وحصته المشتركة مع حسابه (GET /users/:userId/usage)
+ */
+export interface UserUsageResponse {
+  userId: string;
+  accountId: string;
+  yearMonth: string;
+  userPlan: UsagePlanSummary;
+  userUsage: UsageSnapshot;
+  accountPlan: UsagePlanSummary;
+  accountUsage: UsageSnapshot;
+}

@@ -1000,6 +1000,117 @@ The response returns the full array of matching plans without pagination in this
    - If an October request (`year_month = '2026-10'`) is replayed in November (`year_month = '2026-11'`), the service returns the October decision payload.
    - Zero rows or counters are created for November (`2026-11`), strictly preventing cross-month leakage.
 
+---
+
+## 19. Get Current Usage API: `GET /account/usage` & `GET /users/:userId/usage` (Part 23)
+
+### 19.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Strict Current UTC Calendar Month Scope:**
+   - In Part 23, both usage endpoints strictly represent the **current UTC calendar month** only (`getUtcYearMonth()`).
+   - Query parameters such as `?month=YYYY-MM` or any unexpected query strings are strictly rejected with `400 Bad Request` (`UsageQueryValidationError`).
+   - **Rationale:** Preventing silent fallback or parameter ignoring avoids misleading clients into assuming historical balances were retrieved. Querying past calendar months and establishing historical limits policy is strictly governed by Part 24.
+
+2. **Atomic Point-in-Time MVCC Snapshot (Single `SELECT` Architecture):**
+   - Both endpoints execute a single, comprehensive `SELECT` query utilizing `JOIN` on assigned plans and `LEFT JOIN` on monthly usage tables.
+   - In PostgreSQL, every discrete `SELECT` statement operates under an atomic statement-level MVCC snapshot. Even during an active in-flight consumption transaction, the read sees a consistent, committed point-in-time view of both account and user counters together, preventing split or dirty readings.
+   - If no usage has occurred yet in the current month, `COALESCE(..., 0)` safely resolves consumed units to `0`, and remaining units to full plan quota without throwing.
+
+3. **Dynamic Remaining Calculation & Non-Negative Flooring:**
+   - Remaining quota is never stored in the database; it is computed dynamically via `calculateUsageSnapshot(monthlyLimit, consumed)`.
+   - Remaining quota is strictly floored at 0 (`Math.max(0, monthlyLimit - consumed)`). If an account or user plan was downgraded below cumulative consumption, `remaining` reports `0` without error and without modifying or decrementing historical consumed totals.
+
+4. **Multi-Tenant Boundary Enforcement & Foreign Resource Masking:**
+   - In `GET /account/usage`, the account identity is derived strictly from the authenticated token (`request.account.id`).
+   - In `GET /users/:userId/usage`, the query includes `WHERE u.id = $1 AND u.account_id = $2`. Attempting to access a user belonging to another tenant yields 0 rows, returning `404 Not Found` (`User not found`) with zero data leak.
+
+5. **Informational Nature Disclaimer (`[إلزامي]`)**:
+   - The usage snapshots returned by `GET /account/usage` and `GET /users/:userId/usage` are purely informational reflecting database state at the exact moment of query.
+   - **No Reservation Guarantee:** Reading available balance does **not** reserve units or guarantee acceptance for subsequent consumption requests. Concurrent requests may exhaust remaining allowance before a client's write request arrives. Actual quota deduction and permission are resolved exclusively inside the atomic `executeConsumption` transaction under the tenant row lock.
+
+---
+
+### 19.2 Endpoint Details: `GET /account/usage`
+
+#### Request Details
+- **Method:** `GET`
+- **Path:** `/account/usage`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Query Parameters:** None permitted (passing any query parameters returns `400 Bad Request`).
+
+#### Successful Response (`200 OK`)
+```json
+{
+  "accountId": "acc_0123456789abcdef01234567",
+  "yearMonth": "2026-10",
+  "plan": {
+    "id": "plan_default_account",
+    "name": "Default Account Plan",
+    "type": "ACCOUNT",
+    "monthlyLimit": 100000,
+    "perRequestLimit": 1000
+  },
+  "usage": {
+    "consumed": 65,
+    "remaining": 99935
+  }
+}
+```
+
+#### Error Responses
+- `400 Bad Request`: Extraneous query parameters provided (e.g. `?month=2026-09`).
+- `401 Unauthorized`: Missing or invalid Bearer API key.
+- `404 Not Found`: Account record missing from database.
+- `500 Internal Server Error`: Unexpected database error.
+
+---
+
+### 19.3 Endpoint Details: `GET /users/:userId/usage`
+
+#### Request Details
+- **Method:** `GET`
+- **Path:** `/users/:userId/usage`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Query Parameters:** None permitted.
+
+#### Successful Response (`200 OK`)
+*(Returns unified atomic snapshot of user's personal quota and parent account's shared quota)*:
+```json
+{
+  "userId": "usr_9f8e7d6c5b4a321012345678",
+  "accountId": "acc_0123456789abcdef01234567",
+  "yearMonth": "2026-10",
+  "userPlan": {
+    "id": "plan_default_user",
+    "name": "Default User Plan",
+    "type": "USER",
+    "monthlyLimit": 10000,
+    "perRequestLimit": 500
+  },
+  "userUsage": {
+    "consumed": 30,
+    "remaining": 9970
+  },
+  "accountPlan": {
+    "id": "plan_default_account",
+    "name": "Default Account Plan",
+    "type": "ACCOUNT",
+    "monthlyLimit": 100000,
+    "perRequestLimit": 1000
+  },
+  "accountUsage": {
+    "consumed": 80,
+    "remaining": 99920
+  }
+}
+```
+
+#### Error Responses
+- `400 Bad Request`: Extraneous query parameters provided.
+- `401 Unauthorized`: Missing or invalid Bearer API key.
+- `404 Not Found`: User not found or belongs to another tenant account (`User not found`).
+- `500 Internal Server Error`: Unexpected database error.
+
 
 
 

@@ -33,6 +33,12 @@ import {
   UserConflictError,
   UserNotFoundError,
 } from './users.js';
+import {
+  getAccountCurrentUsage,
+  getUserCurrentUsage,
+  assertNoUnsupportedQueryParams,
+  UsageQueryValidationError,
+} from './usage.js';
 
 export interface AppOptions {
   checkHealth: () => Promise<boolean>;
@@ -336,6 +342,66 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(404).send({ error: err.message });
         }
         console.error('Failed to update custom plan due to an unexpected error');
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 12. مسار استرجاع استخدام الحساب للشهر الحالي: GET /account/usage (Part 23)
+  app.get(
+    '/account/usage',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        assertNoUnsupportedQueryParams(request.query);
+        const usage = await getAccountCurrentUsage(options.pool, accountId);
+        return reply.code(200).send(usage);
+      } catch (err) {
+        if (err instanceof UsageQueryValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        if (err instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        console.error('Failed to get account usage due to an unexpected error:', err);
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 13. مسار استرجاع استخدام المستخدم للشهر الحالي: GET /users/:userId/usage (Part 23)
+  app.get<{ Params: { userId: string } }>(
+    '/users/:userId/usage',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+      const { userId } = request.params;
+
+      try {
+        assertNoUnsupportedQueryParams(request.query);
+        const usage = await getUserCurrentUsage(options.pool, accountId, userId);
+        return reply.code(200).send(usage);
+      } catch (err) {
+        if (err instanceof UsageQueryValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        if (err instanceof UserNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        if (err instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        console.error('Failed to get user usage due to an unexpected error:', err);
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }

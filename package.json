@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc",
-    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts && tsx tests/plan-assignments.test.ts && tsx tests/plan-changes.test.ts && tsx tests/consumption-validation.test.ts && tsx tests/processing-month.test.ts && tsx tests/quota-evaluation.test.ts && tsx tests/consumed-and-remaining.test.ts && tsx tests/atomic-transaction.test.ts && tsx tests/concurrency-and-locks.test.ts && tsx tests/idempotency.test.ts",
+    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts && tsx tests/plan-assignments.test.ts && tsx tests/plan-changes.test.ts && tsx tests/consumption-validation.test.ts && tsx tests/processing-month.test.ts && tsx tests/quota-evaluation.test.ts && tsx tests/consumed-and-remaining.test.ts && tsx tests/atomic-transaction.test.ts && tsx tests/concurrency-and-locks.test.ts && tsx tests/idempotency.test.ts && tsx tests/usage.test.ts",
     "start": "node dist/src/server.js"
   },
   "dependencies": {
