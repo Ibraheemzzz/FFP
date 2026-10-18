@@ -129,7 +129,7 @@ export async function withAccountLock<T>(
       } catch (rollbackErr) {
         // فشل التراجع يعني أن الاتصال في حالة غير صالحة ويجب إتلافه
         shouldDiscard = true;
-        console.error('Failed to rollback transaction; discarding connection', rollbackErr);
+        console.error('Failed to rollback transaction; discarding connection');
       }
     }
     throw err;

@@ -1,5 +1,6 @@
 // src/app.ts
-import Fastify, { type FastifyInstance } from 'fastify';
+import crypto from 'node:crypto';
+import Fastify, { type FastifyInstance, type FastifyServerOptions, type FastifyError } from 'fastify';
 import type pg from 'pg';
 import {
   createAccount,
@@ -58,6 +59,7 @@ export interface AppOptions {
   checkHealth: () => Promise<boolean>;
   pool?: pg.Pool;
   clock?: () => Date;
+  logger?: FastifyServerOptions['logger'];
 }
 
 /**
@@ -67,7 +69,64 @@ export interface AppOptions {
  */
 export function buildApp(options: AppOptions): FastifyInstance {
   const app = Fastify({
-    logger: false,
+    genReqId: () => `req_${crypto.randomUUID().replace(/-/g, '')}`,
+    requestIdHeader: false,
+    disableRequestLogging: true,
+    logger: options.logger ?? false,
+  });
+
+  // 1. ترويسة x-request-id مرفقة دائماً لجميع الردود ومولدة من الخادم حصراً
+  app.addHook('onSend', async (request, reply) => {
+    reply.header('x-request-id', request.id);
+  });
+
+  // 2. تسجيل منظم للطلب مكتملاً لمرة واحدة دون تكرار ودون تسجيل الترويسات أو الأجسام
+  app.addHook('onResponse', async (request, reply) => {
+    const urlPath = request.url.split('?')[0];
+    request.log.info(
+      {
+        event: 'request_completed',
+        requestId: request.id,
+        method: request.method,
+        path: urlPath,
+        statusCode: reply.statusCode,
+        durationMs: Number(reply.elapsedTime.toFixed(2)),
+      },
+      'Request completed'
+    );
+  });
+
+  // 3. معالج الأخطاء المركزي لحماية التفاصيل ومعالجة أخطاء Fastify المعروفة
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE' || error.statusCode === 415) {
+      return reply.code(415).send({ error: 'Unsupported Media Type' });
+    }
+    if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || error.statusCode === 413) {
+      return reply.code(413).send({ error: 'Payload Too Large' });
+    }
+    if (
+      error.code === 'FST_ERR_CTP_INVALID_JSON_BODY' ||
+      error.code === 'FST_ERR_CTP_EMPTY_JSON_BODY' ||
+      error.code === 'FST_ERR_CTP_INVALID_CONTENT' ||
+      error instanceof SyntaxError ||
+      (error.statusCode === 400 && typeof error.message === 'string' && error.message.includes('JSON'))
+    ) {
+      return reply.code(400).send({ error: 'Invalid request body' });
+    }
+
+    if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+      return reply.code(error.statusCode).send({ error: error.message });
+    }
+
+    request.log.error(
+      {
+        event: 'request_failed',
+        requestId: request.id,
+      },
+      'Unexpected request failure'
+    );
+
+    return reply.code(500).send({ error: 'Internal Server Error' });
   });
 
   // 1. مسار فحص الحياة (Liveness): يفحص أن عملية Node.js تستجيب
@@ -100,7 +159,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
       if (err instanceof AccountValidationError) {
         return reply.code(400).send({ error: err.message });
       }
-      console.error('Failed to create account due to an unexpected error');
+      request.log.error(
+        { event: 'request_failed', requestId: request.id },
+        'Unexpected request failure'
+      );
       return reply.code(500).send({ error: 'Internal Server Error' });
     }
   });
@@ -147,7 +209,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to update account plan due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -173,7 +238,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof NotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to retrieve plan due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -201,7 +269,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof UserConflictError) {
           return reply.code(409).send({ error: err.message });
         }
-        console.error('Failed to create user due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -226,7 +297,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         }
         return reply.code(200).send(user);
       } catch (err) {
-        console.error('Failed to retrieve user due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -263,7 +337,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to update user plan due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -288,7 +365,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof PlanValidationError) {
           return reply.code(400).send({ error: err.message });
         }
-        console.error('Failed to list plans due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -316,7 +396,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof PlanValidationError) {
           return reply.code(400).send({ error: err.message });
         }
-        console.error('Failed to create custom plan due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -356,7 +439,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to update custom plan due to an unexpected error');
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -394,7 +480,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to get account usage due to an unexpected error:', err);
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -436,7 +525,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
         if (err instanceof AccountNotFoundError) {
           return reply.code(404).send({ error: err.message });
         }
-        console.error('Failed to get user usage due to an unexpected error:', err);
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -474,7 +566,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(409).send({ error: err.message });
         }
 
-        console.error('Failed to process consumption due to an unexpected error:', err);
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }
@@ -500,7 +595,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(400).send({ error: err.message });
         }
 
-        console.error('Failed to get request history due to an unexpected error:', err);
+        request.log.error(
+          { event: 'request_failed', requestId: request.id },
+          'Unexpected request failure'
+        );
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }

@@ -118,7 +118,10 @@ export function createAuthPreHandler(pool?: pg.Pool): preHandlerHookHandler {
     try {
       account = await authenticateApiKey(pool, token);
     } catch {
-      console.error('Database authentication query error occurred');
+      request.log.error(
+        { event: 'auth_failed', requestId: request.id },
+        'Database authentication query error occurred'
+      );
       return reply.code(500).send({ error: 'Internal Server Error' });
     }
 

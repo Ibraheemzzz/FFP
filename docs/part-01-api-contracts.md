@@ -1359,6 +1359,54 @@ The response returns the full array of matching plans without pagination in this
 - `401 Unauthorized`: Missing or invalid Bearer API key.
 - `500 Internal Server Error`: Safe generic response on database or unexpected system errors.
 
+---
+
+## 22. Observability, Request Tracing & Error Handling Architecture (Part 26)
+
+### 22.1 Universal Request Tracing (`x-request-id`)
+- **Server Generation:** Every incoming HTTP request is assigned a unique, cryptographically random identifier generated exclusively by the server via `crypto.randomUUID()` in the format `req_<32 hex chars>`.
+- **Client Header Immunity:** The server enforces `requestIdHeader: false`. Any client-supplied tracking headers (e.g., `x-request-id` or `request-id`) are ignored and overwritten.
+- **Response Propagation:** Every HTTP response carries the server-generated `x-request-id` header in the `onSend` lifecycle hook, enabling unambiguous cross-system log correlation.
+
+### 22.2 Error Response Contract
+- **Payload Shape:** All error responses strictly maintain the uniform schema without extra properties:
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+- **Fastify Protocol Errors:** The central error handler preserves Fastify's native 4xx protocol status codes rather than degrading to internal errors:
+  - `400 Bad Request` (`FST_ERR_CTP_INVALID_JSON_BODY`, `FST_ERR_CTP_EMPTY_JSON_BODY`, `SyntaxError`): Returned with `{ "error": "Invalid request body" }`.
+  - `413 Payload Too Large` (`FST_ERR_CTP_BODY_TOO_LARGE`): Returned with `{ "error": "Payload Too Large" }`.
+  - `415 Unsupported Media Type` (`FST_ERR_CTP_INVALID_MEDIA_TYPE`): Returned with `{ "error": "Unsupported Media Type" }`.
+  - `4xx Client Errors`: Existing domain validation, conflict, and authorization errors retain their specific status codes and messages.
+  - `500 Internal Server Error`: Unhandled exceptions, infrastructure failures, or database errors return `{ "error": "Internal Server Error" }`.
+
+### 22.3 Structured Request Logging & Log Hygiene
+- **Single Completion Log:** Fastify's automatic duplicate request logging is disabled (`disableRequestLogging: true`). A single structured JSON log entry is emitted on `onResponse`:
+```json
+{
+  "event": "request_completed",
+  "requestId": "req_0192a688b123456789abcdef01234567",
+  "method": "POST",
+  "path": "/consumptions",
+  "statusCode": 200,
+  "durationMs": 4.12
+}
+```
+- **Strict Privacy & Secret Protection:**
+  - Query parameters are stripped from logged paths (`request.url.split('?')[0]`).
+  - Request headers (including `Authorization: Bearer <key>`) and request bodies are never logged.
+  - Raw error objects and `err.message` are never printed in 500 logs; unexpected failures are logged with a constant message:
+    `request.log.error({ event: 'request_failed', requestId: request.id }, 'Unexpected request failure')`.
+  - Source files (`app.ts`, `auth.ts`, `server.ts`, `db.ts`, `migrator.ts`) are audited against raw error message leakage.
+
+### 22.4 Database Timeout & Transaction Guarantees
+- **Statement Timeout (`57014`) & Lock Timeout (`55P03`):** Any statement or lock timeout occurring inside `withAccountLock` aborts the transaction immediately.
+- **Atomic Rollback:** The transaction is rolled back via `ROLLBACK`, guaranteeing zero partial deduction and pristine quota state.
+- **Clean Discard on Catastrophic Failure:** If a transaction failure cannot be cleanly rolled back, the client connection is destroyed (`client.release(true)`), preventing poisoned connections from returning to the pool.
+
+
 
 
 

@@ -9,8 +9,8 @@ let config: AppConfig;
 try {
   initEnvironment();
   config = loadConfig();
-} catch (error) {
-  console.error('Configuration error:', (error as Error).message);
+} catch {
+  console.error('Configuration error during startup');
   process.exit(1);
 }
 
@@ -28,8 +28,8 @@ if (!isDbConnected) {
 // 4. تشغيل مهاجرات قاعدة البيانات قبل قبول أي طلبات (Schema Migration Runner)
 try {
   await runMigrations(pool);
-} catch (error) {
-  console.error('Failed to run database migrations during startup:', (error as Error).message);
+} catch {
+  console.error('Failed to run database migrations during startup');
   await pool.end();
   process.exit(1);
 }
@@ -44,8 +44,8 @@ const app = buildApp({
 try {
   await app.listen({ port: config.PORT, host: config.HOST });
   console.log(`[Fastify + TypeScript] Server is running on http://${config.HOST}:${config.PORT}`);
-} catch (error) {
-  console.error('Failed to start server:', error);
+} catch {
+  console.error('Failed to start server');
   await pool.end();
   process.exit(1);
 }
