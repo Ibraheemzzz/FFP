@@ -96,26 +96,22 @@ export function buildApp(options: AppOptions): FastifyInstance {
     );
   });
 
-  // 3. معالج الأخطاء المركزي لحماية التفاصيل ومعالجة أخطاء Fastify المعروفة
+  // 3. معالج الأخطاء المركزي لحماية التفاصيل وحصر أخطاء Fastify المعروفة بدقة
   app.setErrorHandler((error: FastifyError, request, reply) => {
-    if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE' || error.statusCode === 415) {
+    if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') {
       return reply.code(415).send({ error: 'Unsupported Media Type' });
     }
-    if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || error.statusCode === 413) {
+
+    if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
       return reply.code(413).send({ error: 'Payload Too Large' });
     }
+
     if (
       error.code === 'FST_ERR_CTP_INVALID_JSON_BODY' ||
       error.code === 'FST_ERR_CTP_EMPTY_JSON_BODY' ||
-      error.code === 'FST_ERR_CTP_INVALID_CONTENT' ||
-      error instanceof SyntaxError ||
-      (error.statusCode === 400 && typeof error.message === 'string' && error.message.includes('JSON'))
+      error.code === 'FST_ERR_CTP_INVALID_CONTENT_LENGTH'
     ) {
       return reply.code(400).send({ error: 'Invalid request body' });
-    }
-
-    if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
-      return reply.code(error.statusCode).send({ error: error.message });
     }
 
     request.log.error(

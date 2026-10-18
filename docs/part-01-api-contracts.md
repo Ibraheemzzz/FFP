@@ -1375,12 +1375,12 @@ The response returns the full array of matching plans without pagination in this
   "error": "Descriptive error message"
 }
 ```
-- **Fastify Protocol Errors:** The central error handler preserves Fastify's native 4xx protocol status codes rather than degrading to internal errors:
-  - `400 Bad Request` (`FST_ERR_CTP_INVALID_JSON_BODY`, `FST_ERR_CTP_EMPTY_JSON_BODY`, `SyntaxError`): Returned with `{ "error": "Invalid request body" }`.
+- **Fastify Protocol Errors:** The central error handler identifies Fastify's verified protocol parsing codes directly:
+  - `400 Bad Request` (`FST_ERR_CTP_INVALID_JSON_BODY`, `FST_ERR_CTP_EMPTY_JSON_BODY`, `FST_ERR_CTP_INVALID_CONTENT_LENGTH`): Returned with `{ "error": "Invalid request body" }`.
   - `413 Payload Too Large` (`FST_ERR_CTP_BODY_TOO_LARGE`): Returned with `{ "error": "Payload Too Large" }`.
   - `415 Unsupported Media Type` (`FST_ERR_CTP_INVALID_MEDIA_TYPE`): Returned with `{ "error": "Unsupported Media Type" }`.
-  - `4xx Client Errors`: Existing domain validation, conflict, and authorization errors retain their specific status codes and messages.
-  - `500 Internal Server Error`: Unhandled exceptions, infrastructure failures, or database errors return `{ "error": "Internal Server Error" }`.
+  - `Domain Client Errors`: Validated business rules, conflict, and authentication errors handled within route handlers retain their specific status codes and messages.
+  - `500 Internal Server Error`: All unexpected errors, internal syntax errors, or unverified exceptions return `{ "error": "Internal Server Error" }` without echoing error messages.
 
 ### 22.3 Structured Request Logging & Log Hygiene
 - **Single Completion Log:** Fastify's automatic duplicate request logging is disabled (`disableRequestLogging: true`). A single structured JSON log entry is emitted on `onResponse`:

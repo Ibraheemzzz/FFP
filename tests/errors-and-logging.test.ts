@@ -346,7 +346,53 @@ async function runErrorsAndLoggingTests(): Promise<void> {
     });
     assert.equal(resNotFound404.statusCode, 404);
     assert.deepEqual(resNotFound404.json(), { error: 'User not found' });
-    console.log('✔ Test 5 passed: Fastify error codes (400, 413, 415) and existing 4xx handled accurately');
+
+    // 5.6 التحقق من أن SyntaxError الداخلي ينتج 500 وليس 400
+    // نسجل المسارات التجريبية على نسخة تطبيق اختبار مخصصة قبل بدء حقن الطلبات
+    const edgeCaseApp = buildApp({
+      checkHealth: async () => true,
+      pool,
+    });
+
+    edgeCaseApp.get('/test-internal-syntax-error', async () => {
+      // محاكاة استدعاء داخلي فشل فيه JSON.parse
+      JSON.parse('{ invalid internal json syntax');
+    });
+
+    edgeCaseApp.get('/test-unknown-4xx-error', async () => {
+      const customErr: any = new Error('Sensitive internal diagnostic error message');
+      customErr.statusCode = 400;
+      throw customErr;
+    });
+
+    const resInternalSyntax = await edgeCaseApp.inject({
+      method: 'GET',
+      url: '/test-internal-syntax-error',
+    });
+    assert.equal(
+      resInternalSyntax.statusCode,
+      500,
+      'Internal SyntaxError must return 500 Internal Server Error, NOT 400'
+    );
+    assert.deepEqual(resInternalSyntax.json(), { error: 'Internal Server Error' });
+
+    // 5.7 التحقق من أن أي خطأ مجهول يحمل حالة 4xx يتحول إلى 500 دون تسريب رسالته
+    const resUnknown4xx = await edgeCaseApp.inject({
+      method: 'GET',
+      url: '/test-unknown-4xx-error',
+    });
+    assert.equal(
+      resUnknown4xx.statusCode,
+      500,
+      'Unknown error carrying 4xx statusCode must be converted to 500 without leaking error message'
+    );
+    assert.deepEqual(resUnknown4xx.json(), { error: 'Internal Server Error' });
+    assert.ok(
+      !resUnknown4xx.body.includes('Sensitive internal diagnostic error message'),
+      'Sensitive diagnostic message must not be leaked to the client'
+    );
+    await edgeCaseApp.close();
+    console.log('✔ Test 5 passed: Fastify error codes (400, 413, 415), internal SyntaxError (500), and unknown 4xx handled accurately');
 
     // =========================================================================
     // 6. اختبار التراجع الذري عند انقضاء مهلة الاستعلام (Statement Timeout 57014)
