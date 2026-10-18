@@ -96,3 +96,39 @@ export interface UserUsageResponse {
   accountPlan: UsagePlanSummary;
   accountUsage: UsageSnapshot;
 }
+
+/**
+ * ملخص خطة الاستخدام التاريخية المستخرجة من سياق آخر طلب مسجل
+ */
+export interface HistoricalPlanSummary {
+  id: string;
+  monthlyLimit: number;
+  perRequestLimit: number;
+}
+
+/**
+ * رد استخدام الحساب لشهر سابق (GET /account/usage?month=YYYY-MM)
+ */
+export interface HistoricalAccountUsageResponse {
+  accountId: string;
+  yearMonth: string;
+  isCurrentMonth: false;
+  consumed: number;
+  planAtLastRequest: HistoricalPlanSummary | null;
+  lastRequestAt: string | null;
+}
+
+/**
+ * رد استخدام المستخدم لشهر سابق (GET /users/:userId/usage?month=YYYY-MM)
+ */
+export interface HistoricalUserUsageResponse {
+  userId: string;
+  accountId: string;
+  yearMonth: string;
+  isCurrentMonth: false;
+  userConsumed: number;
+  accountConsumed: number;
+  userPlanAtLastRequest: HistoricalPlanSummary | null;
+  accountPlanAtLastRequest: HistoricalPlanSummary | null;
+  lastRequestAt: string | null;
+}

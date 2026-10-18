@@ -35,14 +35,18 @@ import {
 } from './users.js';
 import {
   getAccountCurrentUsage,
+  getAccountHistoricalUsage,
   getUserCurrentUsage,
-  assertNoUnsupportedQueryParams,
+  getUserHistoricalUsage,
+  validateUsageMonthQuery,
   UsageQueryValidationError,
 } from './usage.js';
+import { getUtcYearMonth } from './consumptions.js';
 
 export interface AppOptions {
   checkHealth: () => Promise<boolean>;
   pool?: pg.Pool;
+  clock?: () => Date;
 }
 
 /**
@@ -347,7 +351,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 12. مسار استرجاع استخدام الحساب للشهر الحالي: GET /account/usage (Part 23)
+  // 12. مسار استرجاع استخدام الحساب (الحالي والتاريخي): GET /account/usage (Parts 23 & 24)
   app.get(
     '/account/usage',
     { preHandler: requireAuth },
@@ -359,9 +363,19 @@ export function buildApp(options: AppOptions): FastifyInstance {
       const accountId = request.account!.id;
 
       try {
-        assertNoUnsupportedQueryParams(request.query);
-        const usage = await getAccountCurrentUsage(options.pool, accountId);
-        return reply.code(200).send(usage);
+        const now = options.clock ? options.clock() : new Date();
+        const currentUtcMonth = getUtcYearMonth(now);
+        const requestedMonth = validateUsageMonthQuery(request.query, currentUtcMonth);
+
+        if (requestedMonth === null || requestedMonth === currentUtcMonth) {
+          const usage = await getAccountCurrentUsage(options.pool, accountId, {
+            clock: () => now,
+          });
+          return reply.code(200).send(usage);
+        } else {
+          const usage = await getAccountHistoricalUsage(options.pool, accountId, requestedMonth);
+          return reply.code(200).send(usage);
+        }
       } catch (err) {
         if (err instanceof UsageQueryValidationError) {
           return reply.code(400).send({ error: err.message });
@@ -375,7 +389,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 13. مسار استرجاع استخدام المستخدم للشهر الحالي: GET /users/:userId/usage (Part 23)
+  // 13. مسار استرجاع استخدام المستخدم (الحالي والتاريخي): GET /users/:userId/usage (Parts 23 & 24)
   app.get<{ Params: { userId: string } }>(
     '/users/:userId/usage',
     { preHandler: requireAuth },
@@ -388,9 +402,19 @@ export function buildApp(options: AppOptions): FastifyInstance {
       const { userId } = request.params;
 
       try {
-        assertNoUnsupportedQueryParams(request.query);
-        const usage = await getUserCurrentUsage(options.pool, accountId, userId);
-        return reply.code(200).send(usage);
+        const now = options.clock ? options.clock() : new Date();
+        const currentUtcMonth = getUtcYearMonth(now);
+        const requestedMonth = validateUsageMonthQuery(request.query, currentUtcMonth);
+
+        if (requestedMonth === null || requestedMonth === currentUtcMonth) {
+          const usage = await getUserCurrentUsage(options.pool, accountId, userId, {
+            clock: () => now,
+          });
+          return reply.code(200).send(usage);
+        } else {
+          const usage = await getUserHistoricalUsage(options.pool, accountId, userId, requestedMonth);
+          return reply.code(200).send(usage);
+        }
       } catch (err) {
         if (err instanceof UsageQueryValidationError) {
           return reply.code(400).send({ error: err.message });

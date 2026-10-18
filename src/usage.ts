@@ -1,51 +1,145 @@
 // src/usage.ts
-// منطق قراءة وعرض الاستخدام الحالي للحسابات والمستخدمين (Get Current Usage API)
+// منطق قراءة وعرض الاستخدام الحالي والتاريخي للحسابات والمستخدمين (Parts 23 & 24)
 
 import type { DbExecutor } from './db.js';
 import type {
   AccountUsageResponse,
   UserUsageResponse,
   UsagePlanSummary,
+  HistoricalPlanSummary,
+  HistoricalAccountUsageResponse,
+  HistoricalUserUsageResponse,
 } from './types.js';
 import { calculateUsageSnapshot, getUtcYearMonth } from './consumptions.js';
 import { AccountNotFoundError } from './accounts.js';
 import { UserNotFoundError } from './users.js';
 
 /**
- * خطأ التحقق من معاملات الاستعلام غير المدعومة في مسارات الاستخدام الحالي
+ * خطأ التحقق من معاملات الاستعلام في مسارات الاستخدام
  */
 export class UsageQueryValidationError extends Error {
-  constructor(message = 'Query parameters are not supported for current usage in this version. This endpoint strictly returns current month usage.') {
+  constructor(message = 'Query validation error') {
     super(message);
     this.name = 'UsageQueryValidationError';
   }
 }
 
 /**
- * دالة التحقق من عدم تمرير معاملات استعلام غير مدعومة في الجزء 23
- * تمنع إيهام العميل بأنه اختار شهراً قديماً مثل ?month=2026-09،
- * حيث إن قراءة الأشهر السابقة والسياسة المعتمدة لحدودها التاريخية محصورة في الجزء 24.
+ * دالة التحقق من معامِل الشهر في استعلامات الاستخدام (Part 24)
+ *
+ * القواعد الصارمة المطبقة:
+ * 1. يسمح فقط بالمعامِل "month". أي معامِل إضافي أو مجهول يُرفض فوراً بـ 400.
+ * 2. إذا لم يُمرر "month"، تعيد الدالة null للدلالة على استعلام الشهر الحالي.
+ * 3. ترفض المصفوفات والقيم المكررة وغير النصية بـ 400.
+ * 4. تحصر السنة بين 1000 و 9999 والشهر بين 01 و 12 بنمط: /^[1-9]\d{3}-(0[1-9]|1[0-2])$/
+ * 5. تقارن بالشهر الحالي المأخوذ من نفس لقطة الساعة الملتقطة مرة واحدة.
+ * 6. إذا كان الشهر مستقبلياً (month > currentUtcMonth): ترفض بـ 400.
+ *
+ * @param query كائن معاملات الاستعلام من طلب HTTP
+ * @param currentUtcMonth الشهر الحالي بتوقيت UTC بصيغة YYYY-MM
+ * @returns الشهر المطلوب بصيغة YYYY-MM أو null إذا لم يُحدد
+ */
+export function validateUsageMonthQuery(query: unknown, currentUtcMonth: string): string | null {
+  if (query === null || query === undefined || typeof query !== 'object') {
+    return null;
+  }
+
+  const queryRecord = query as Record<string, unknown>;
+  const keys = Object.keys(queryRecord);
+
+  if (keys.length === 0) {
+    return null;
+  }
+
+  if (keys.length > 1 || keys[0] !== 'month') {
+    throw new UsageQueryValidationError('Only the "month" query parameter is supported.');
+  }
+
+  const rawMonth = queryRecord.month;
+  if (typeof rawMonth !== 'string') {
+    throw new UsageQueryValidationError(
+      'The "month" query parameter must be a single string in YYYY-MM format.'
+    );
+  }
+
+  const trimmedMonth = rawMonth.trim();
+  // التحقق الصارم من أن السنة 4 أرقام بين 1000 و 9999 والشهر بين 01 و 12
+  const monthRegex = /^[1-9]\d{3}-(0[1-9]|1[0-2])$/;
+  if (!monthRegex.test(trimmedMonth)) {
+    throw new UsageQueryValidationError(
+      'Invalid month format. Expected YYYY-MM with a 4-digit year between 1000 and 9999 (e.g. 2026-09).'
+    );
+  }
+
+  if (trimmedMonth > currentUtcMonth) {
+    throw new UsageQueryValidationError('Cannot query usage for a future month.');
+  }
+
+  return trimmedMonth;
+}
+
+/**
+ * دالة مساعدة سابقة للإبقاء على التوافق إن وُجدت استدعاءات خارجية لها
  */
 export function assertNoUnsupportedQueryParams(query: unknown): void {
   if (typeof query === 'object' && query !== null) {
     const keys = Object.keys(query as Record<string, unknown>);
     if (keys.length > 0) {
-      throw new UsageQueryValidationError(
-        'Query parameters are not supported for current usage in this version. This endpoint strictly returns current month usage.'
-      );
+      throw new UsageQueryValidationError('Only the "month" query parameter is supported.');
     }
   }
 }
 
 /**
- * خيارات قراءة الاستخدام (مثل حقن الساعة للاختبارات الزمنية)
+ * خيارات قراءة الاستخدام (مثل حقن الساعة للاختبارات الزمنية وضمان اتساق الشهر)
  */
 export interface GetUsageOptions {
   clock?: () => Date;
 }
 
 /**
- * نوع صف نتيجة استعلام استخدام الحساب من قاعدة البيانات
+ * حساب النطاق الزمني للشهر بتوقيت UTC بصيغة [بداية الشهر, بداية الشهر التالي)
+ * يُستخدم للبحث الدقيق والمفهرس في سجلات الاستهلاك التاريخية
+ */
+export function getUtcMonthDateRange(yearMonth: string): { start: Date; end: Date } {
+  const [yearStr, monthStr] = yearMonth.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
+/**
+ * دالة استخراج بيانات الخطة التاريخية من كائن سياق القرار بأمان
+ */
+function extractHistoricalPlan(planObj: unknown): HistoricalPlanSummary | null {
+  if (!planObj || typeof planObj !== 'object') {
+    return null;
+  }
+  const p = planObj as Record<string, unknown>;
+  if (typeof p.id !== 'string' || p.id.trim() === '') {
+    return null;
+  }
+  if (
+    typeof p.monthlyLimit !== 'number' ||
+    !Number.isSafeInteger(p.monthlyLimit) ||
+    p.monthlyLimit < 0 ||
+    typeof p.perRequestLimit !== 'number' ||
+    !Number.isSafeInteger(p.perRequestLimit) ||
+    p.perRequestLimit < 0
+  ) {
+    return null;
+  }
+  return {
+    id: p.id,
+    monthlyLimit: p.monthlyLimit,
+    perRequestLimit: p.perRequestLimit,
+  };
+}
+
+/**
+ * نوع صف نتيجة استعلام استخدام الحساب الحالي من قاعدة البيانات
  */
 interface AccountUsageRow {
   account_id: string;
@@ -59,7 +153,17 @@ interface AccountUsageRow {
 }
 
 /**
- * نوع صف نتيجة استعلام استخدام المستخدم وحصته المشتركة من قاعدة البيانات
+ * نوع صف نتيجة استعلام استخدام الحساب لشهر سابق من قاعدة البيانات
+ */
+interface AccountHistoricalUsageRow {
+  account_id: string;
+  total_units: string | number;
+  decision_context: unknown;
+  last_request_at: Date | string | null;
+}
+
+/**
+ * نوع صف نتيجة استعلام استخدام المستخدم وحصته المشتركة للشهر الحالي
  */
 interface UserUsageRow {
   user_id: string;
@@ -81,18 +185,19 @@ interface UserUsageRow {
 }
 
 /**
- * استرجاع الاستخدام الحالي للحساب الموثق للشهر الحالي بتوقيت UTC
- *
- * المبادئ المطبقة:
- * 1. استعلام SELECT مفرد وذري يربط الحساب بخطته الحالية وعداد الاستخدام الشهري بـ LEFT JOIN.
- * 2. يرى الاستعلام لقطة MVCC متسقة ولحظية للحساب.
- * 3. التحقق الصارم من نوع الخطة (ACCOUNT) وإتاحتها للحساب.
- * 4. إعادة استخدام calculateUsageSnapshot لضمان عدم سلبية المتبقي.
- * 5. القراءة معلومات لحظية وليست حجزاً أو ضمان قبول.
- *
- * @param executor منفذ الاستعلامات (Pool أو PoolClient)
- * @param accountId معرف الحساب الموثق
- * @param options خيارات القراءة (حقن الساعة)
+ * نوع صف نتيجة استعلام استخدام المستخدم لشهر سابق من قاعدة البيانات
+ */
+interface UserHistoricalUsageRow {
+  user_id: string;
+  account_id: string;
+  user_total_units: string | number;
+  account_total_units: string | number;
+  decision_context: unknown;
+  last_request_at: Date | string | null;
+}
+
+/**
+ * استرجاع الاستخدام الحالي للحساب الموثق للشهر الحالي بتوقيت UTC (Part 23)
  */
 export async function getAccountCurrentUsage(
   executor: DbExecutor,
@@ -126,7 +231,6 @@ export async function getAccountCurrentUsage(
 
   const row = result.rows[0];
 
-  // التحقق من نوع الخطة وإتاحتها
   if (row.plan_type !== 'ACCOUNT') {
     throw new Error(`Account assigned invalid plan type '${row.plan_type}'. Expected 'ACCOUNT'.`);
   }
@@ -135,7 +239,6 @@ export async function getAccountCurrentUsage(
     throw new Error('Account assigned inaccessible private plan belonging to another account.');
   }
 
-  // تحويل حقول BIGINT بأمان من نصوص إلى أرقام
   const monthlyLimit = Number(row.plan_monthly_limit);
   const perRequestLimit = Number(row.plan_per_request_limit);
   const consumed = Number(row.consumed_units);
@@ -159,21 +262,86 @@ export async function getAccountCurrentUsage(
 }
 
 /**
- * استرجاع الاستخدام الحالي للمستخدم وحصته المشتركة مع حسابه للشهر الحالي بتوقيت UTC
+ * استرجاع استخدام الحساب لشهر سابق (Part 24: Historical Account Usage)
  *
- * المبادئ المطبقة:
- * 1. استعلام SELECT مفرد وذري يربط المستخدم بحسابه والخطتين والعدادين في لقطة MVCC متسقة واحدة.
- * 2. قيد WHERE u.id = $1 AND u.account_id = $2 يضمن التفرّد والعزل الصارم بين المستأجرين؛
- *    إذا لم يكن المستخدم موجوداً أو يتبع حساباً آخر، يُرمى UserNotFoundError الذي يُترجم لـ 404.
- * 3. ربط عداد المستخدم يشمل u.account_id و u.id و year_month لمنع أي خلط.
- * 4. التحقق الصارم من نوع خطة المستخدم (USER) وخطة الحساب (ACCOUNT) وإتاحتهما.
- * 5. إعادة استخدام calculateUsageSnapshot لحساب المتبقي وسقف الصفر الأدنى.
- * 6. القراءة معلومات لحظية وليست حجزاً أو ضمان قبول.
- *
- * @param executor منفذ الاستعلامات (Pool أو PoolClient)
- * @param accountId معرف الحساب الموثق
- * @param userId معرف المستخدم المطلوب
- * @param options خيارات القراءة (حقن الساعة)
+ * المبادئ الحاكمة:
+ * 1. استهلاك الحساب المحقق يُقرأ من total_units في عداد الشهر.
+ * 2. إذا لم يكن هناك عداد للشهر، يُعاد 0.
+ * 3. الخطة والحدود تُستخرجان من decision_context لآخر طلب مسجل خلال ذلك الشهر (مقبولاً أو مرفوضاً).
+ * 4. إذا لم توجد طلبات في ذلك الشهر، أو كان سياق آخر طلب فارغاً {}، تعود الخطة null.
+ * 5. يُحفظ وقت آخر طلب lastRequestAt إذا وُجد الطلب حتى وإن كان سياقه فارغاً.
+ * 6. لا يُعرض remaining تاريخياً إطلاقاً.
+ */
+export async function getAccountHistoricalUsage(
+  executor: DbExecutor,
+  accountId: string,
+  yearMonth: string
+): Promise<HistoricalAccountUsageResponse> {
+  const { start, end } = getUtcMonthDateRange(yearMonth);
+
+  const query = `
+    WITH account_check AS (
+      SELECT id FROM accounts WHERE id = $1
+    ),
+    monthly_counter AS (
+      SELECT total_units
+      FROM account_monthly_usage
+      WHERE account_id = $1 AND year_month = $2
+    ),
+    latest_request AS (
+      SELECT decision_context, processed_at
+      FROM consumption_records
+      WHERE account_id = $1
+        AND processed_at >= $3 AND processed_at < $4
+      ORDER BY processed_at DESC, id DESC
+      LIMIT 1
+    )
+    SELECT 
+      a.id AS account_id,
+      COALESCE(mc.total_units, 0) AS total_units,
+      lr.decision_context,
+      lr.processed_at AS last_request_at
+    FROM account_check a
+    LEFT JOIN monthly_counter mc ON true
+    LEFT JOIN latest_request lr ON true;
+  `;
+
+  const result = await executor.query<AccountHistoricalUsageRow>(query, [
+    accountId,
+    yearMonth,
+    start.toISOString(),
+    end.toISOString(),
+  ]);
+
+  if (result.rows.length === 0) {
+    throw new AccountNotFoundError('Account not found');
+  }
+
+  const row = result.rows[0];
+  const consumed = Number(row.total_units);
+
+  let planAtLastRequest: HistoricalPlanSummary | null = null;
+  if (row.decision_context && typeof row.decision_context === 'object') {
+    const dc = row.decision_context as Record<string, unknown>;
+    planAtLastRequest = extractHistoricalPlan(dc.accountPlan);
+  }
+
+  const lastRequestAt = row.last_request_at
+    ? new Date(row.last_request_at).toISOString()
+    : null;
+
+  return {
+    accountId: row.account_id,
+    yearMonth,
+    isCurrentMonth: false,
+    consumed,
+    planAtLastRequest,
+    lastRequestAt,
+  };
+}
+
+/**
+ * استرجاع الاستخدام الحالي للمستخدم وحصته المشتركة للشهر الحالي (Part 23)
  */
 export async function getUserCurrentUsage(
   executor: DbExecutor,
@@ -188,23 +356,19 @@ export async function getUserCurrentUsage(
     `SELECT
        u.id AS user_id,
        u.account_id AS account_id,
-       -- خطة المستخدم
        up.id AS user_plan_id,
        up.name AS user_plan_name,
        up.type AS user_plan_type,
        up.monthly_limit AS user_plan_monthly_limit,
        up.per_request_limit AS user_plan_per_request_limit,
        up.owner_account_id AS user_plan_owner_account_id,
-       -- خطة الحساب
        ap.id AS account_plan_id,
        ap.name AS account_plan_name,
        ap.type AS account_plan_type,
        ap.monthly_limit AS account_plan_monthly_limit,
        ap.per_request_limit AS account_plan_per_request_limit,
        ap.owner_account_id AS account_plan_owner_account_id,
-       -- عداد المستخدم للشهر الحالي
        COALESCE(umu.total_units, 0) AS user_consumed_units,
-       -- عداد الحساب للشهر الحالي
        COALESCE(amu.total_units, 0) AS account_consumed_units
      FROM users u
      JOIN accounts a 
@@ -230,7 +394,6 @@ export async function getUserCurrentUsage(
 
   const row = result.rows[0];
 
-  // التحقق من نوع الخطتين
   if (row.user_plan_type !== 'USER') {
     throw new Error(`User assigned invalid plan type '${row.user_plan_type}'. Expected 'USER'.`);
   }
@@ -238,7 +401,6 @@ export async function getUserCurrentUsage(
     throw new Error(`Account assigned invalid plan type '${row.account_plan_type}'. Expected 'ACCOUNT'.`);
   }
 
-  // التحقق من إتاحة الخطتين للحساب
   if (row.user_plan_owner_account_id !== null && row.user_plan_owner_account_id !== accountId) {
     throw new Error('User assigned inaccessible private plan belonging to another account.');
   }
@@ -246,7 +408,6 @@ export async function getUserCurrentUsage(
     throw new Error('Account assigned inaccessible private plan belonging to another account.');
   }
 
-  // تحويل حقول BIGINT بأمان من نصوص إلى أرقام
   const userMonthlyLimit = Number(row.user_plan_monthly_limit);
   const userPerRequestLimit = Number(row.user_plan_per_request_limit);
   const userConsumed = Number(row.user_consumed_units);
@@ -282,5 +443,103 @@ export async function getUserCurrentUsage(
     userUsage: userUsageSnapshot,
     accountPlan: accountPlanSummary,
     accountUsage: accountUsageSnapshot,
+  };
+}
+
+/**
+ * استرجاع استخدام المستخدم لشهر سابق (Part 24: Historical User Usage)
+ *
+ * المبادئ الحاكمة:
+ * 1. استهلاك المستخدم والحساب يُقرآن من total_units لعدّاد كل منهما لذلك الشهر.
+ * 2. خطة المستخدم وخطة الحساب تُستخرجان من decision_context لآخر طلب مسجل لهذا المستخدم خلال الشهر.
+ * 3. إذا لم توجد طلبات لذلك المستخدم في ذلك الشهر، أو كان سياق آخر طلب فارغاً {}، تعود الخطتان null.
+ * 4. يُحفظ وقت آخر طلب lastRequestAt إذا وُجد الطلب حتى وإن كان سياقه فارغاً.
+ * 5. يُحافظ على العزل التام للمستأجرين ويرمى UserNotFoundError إذا لم يوجد المستخدم ضمن الحساب الموثق.
+ * 6. لا يُعرض remaining تاريخياً إطلاقاً.
+ */
+export async function getUserHistoricalUsage(
+  executor: DbExecutor,
+  accountId: string,
+  userId: string,
+  yearMonth: string
+): Promise<HistoricalUserUsageResponse> {
+  const { start, end } = getUtcMonthDateRange(yearMonth);
+
+  const query = `
+    WITH user_check AS (
+      SELECT u.id AS user_id, u.account_id
+      FROM users u
+      WHERE u.id = $1 AND u.account_id = $2
+    ),
+    user_counter AS (
+      SELECT total_units
+      FROM user_monthly_usage
+      WHERE account_id = $2 AND user_id = $1 AND year_month = $3
+    ),
+    account_counter AS (
+      SELECT total_units
+      FROM account_monthly_usage
+      WHERE account_id = $2 AND year_month = $3
+    ),
+    latest_request AS (
+      SELECT decision_context, processed_at
+      FROM consumption_records
+      WHERE account_id = $2 AND user_id = $1
+        AND processed_at >= $4 AND processed_at < $5
+      ORDER BY processed_at DESC, id DESC
+      LIMIT 1
+    )
+    SELECT 
+      uc.user_id,
+      uc.account_id,
+      COALESCE(umc.total_units, 0) AS user_total_units,
+      COALESCE(amc.total_units, 0) AS account_total_units,
+      lr.decision_context,
+      lr.processed_at AS last_request_at
+    FROM user_check uc
+    LEFT JOIN user_counter umc ON true
+    LEFT JOIN account_counter amc ON true
+    LEFT JOIN latest_request lr ON true;
+  `;
+
+  const result = await executor.query<UserHistoricalUsageRow>(query, [
+    userId,
+    accountId,
+    yearMonth,
+    start.toISOString(),
+    end.toISOString(),
+  ]);
+
+  if (result.rows.length === 0) {
+    throw new UserNotFoundError('User not found');
+  }
+
+  const row = result.rows[0];
+  const userConsumed = Number(row.user_total_units);
+  const accountConsumed = Number(row.account_total_units);
+
+  let userPlanAtLastRequest: HistoricalPlanSummary | null = null;
+  let accountPlanAtLastRequest: HistoricalPlanSummary | null = null;
+
+  if (row.decision_context && typeof row.decision_context === 'object') {
+    const dc = row.decision_context as Record<string, unknown>;
+    userPlanAtLastRequest = extractHistoricalPlan(dc.userPlan);
+    accountPlanAtLastRequest = extractHistoricalPlan(dc.accountPlan);
+  }
+
+  const lastRequestAt = row.last_request_at
+    ? new Date(row.last_request_at).toISOString()
+    : null;
+
+  return {
+    userId: row.user_id,
+    accountId: row.account_id,
+    yearMonth,
+    isCurrentMonth: false,
+    userConsumed,
+    accountConsumed,
+    userPlanAtLastRequest,
+    accountPlanAtLastRequest,
+    lastRequestAt,
   };
 }

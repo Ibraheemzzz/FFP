@@ -1036,9 +1036,10 @@ The response returns the full array of matching plans without pagination in this
 - **Method:** `GET`
 - **Path:** `/account/usage`
 - **Headers:** `Authorization: Bearer <api_key>`
-- **Query Parameters:** None permitted (passing any query parameters returns `400 Bad Request`).
+- **Query Parameters:**
+  - `month` *(optional)*: UTC month in `YYYY-MM` format (e.g. `2026-09`). If omitted or matching the current UTC month, returns the current month usage. If specifying a past month, returns historical usage. Future months and malformed values return `400 Bad Request`. Any other query parameters return `400 Bad Request`.
 
-#### Successful Response (`200 OK`)
+#### Successful Response for Current Month (`200 OK`)
 ```json
 {
   "accountId": "acc_0123456789abcdef01234567",
@@ -1057,8 +1058,26 @@ The response returns the full array of matching plans without pagination in this
 }
 ```
 
+#### Successful Response for Historical Closed Month (`200 OK`, e.g. `?month=2026-09`)
+*(Reflects actual consumed units from monthly counter and plan limits from the latest request's `decision_context`. Never returns a `remaining` field for historical periods)*:
+```json
+{
+  "accountId": "acc_0123456789abcdef01234567",
+  "yearMonth": "2026-09",
+  "isCurrentMonth": false,
+  "consumed": 65,
+  "planAtLastRequest": {
+    "id": "plan_starter_account",
+    "monthlyLimit": 1000,
+    "perRequestLimit": 100
+  },
+  "lastRequestAt": "2026-09-28T14:32:00.000Z"
+}
+```
+*(If no consumption requests occurred in that historical month, or legacy context was empty, `planAtLastRequest` is `null`)*.
+
 #### Error Responses
-- `400 Bad Request`: Extraneous query parameters provided (e.g. `?month=2026-09`).
+- `400 Bad Request`: Extraneous query parameters, invalid month format, duplicate values, or future month provided.
 - `401 Unauthorized`: Missing or invalid Bearer API key.
 - `404 Not Found`: Account record missing from database.
 - `500 Internal Server Error`: Unexpected database error.
@@ -1071,9 +1090,10 @@ The response returns the full array of matching plans without pagination in this
 - **Method:** `GET`
 - **Path:** `/users/:userId/usage`
 - **Headers:** `Authorization: Bearer <api_key>`
-- **Query Parameters:** None permitted.
+- **Query Parameters:**
+  - `month` *(optional)*: UTC month in `YYYY-MM` format.
 
-#### Successful Response (`200 OK`)
+#### Successful Response for Current Month (`200 OK`)
 *(Returns unified atomic snapshot of user's personal quota and parent account's shared quota)*:
 ```json
 {
@@ -1105,8 +1125,31 @@ The response returns the full array of matching plans without pagination in this
 }
 ```
 
+#### Successful Response for Historical Closed Month (`200 OK`, e.g. `?month=2026-09`)
+```json
+{
+  "userId": "usr_9f8e7d6c5b4a321012345678",
+  "accountId": "acc_0123456789abcdef01234567",
+  "yearMonth": "2026-09",
+  "isCurrentMonth": false,
+  "userConsumed": 30,
+  "accountConsumed": 65,
+  "userPlanAtLastRequest": {
+    "id": "plan_starter_user",
+    "monthlyLimit": 500,
+    "perRequestLimit": 50
+  },
+  "accountPlanAtLastRequest": {
+    "id": "plan_starter_account",
+    "monthlyLimit": 1000,
+    "perRequestLimit": 100
+  },
+  "lastRequestAt": "2026-09-28T14:32:00.000Z"
+}
+```
+
 #### Error Responses
-- `400 Bad Request`: Extraneous query parameters provided.
+- `400 Bad Request`: Extraneous query parameters, invalid month format, duplicate values, or future month provided.
 - `401 Unauthorized`: Missing or invalid Bearer API key.
 - `404 Not Found`: User not found or belongs to another tenant account (`User not found`).
 - `500 Internal Server Error`: Unexpected database error.
