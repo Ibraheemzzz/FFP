@@ -1154,6 +1154,213 @@ The response returns the full array of matching plans without pagination in this
 - `404 Not Found`: User not found or belongs to another tenant account (`User not found`).
 - `500 Internal Server Error`: Unexpected database error.
 
+---
+
+## 20. Consumption Evaluation & Metering API: `POST /consumptions`
+
+### 20.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Authentication as Single Source of Account Identity:**
+   - The account identity is extracted strictly and exclusively from the authenticated Bearer API key (`request.account.id`).
+   - The request body is validated strictly against allowed fields (`userId`, `units`, `requestId`). Passing `accountId` or any unexpected field in the JSON body is rejected with `400 Bad Request` (`Unknown field: accountId`). It is never silently ignored.
+
+2. **HTTP 200 OK for Business Decisions (Acceptance & Quota Rejection):**
+   - Both acceptance (`accepted: true`) and quota exhaustion (`accepted: false`) are valid business evaluation outcomes, not technical or protocol transport failures.
+   - Both outcomes return HTTP status `200 OK` with complete usage snapshots reflecting current balances.
+   - For rejections, the payload includes a structured `reason` object specifying the binding boundary (`scope`: `'account'` | `'user'`) and the triggered rule (`rule`: `'monthly_allowance'` | `'max_per_request'`).
+
+3. **Response Schema & Immutability:**
+   - The returned `ConsumptionDecision` matches the canonical internal types:
+     - Accepted: `{ accepted: true, requestId, account: { consumed, remaining }, user: { consumed, remaining } }`
+     - Rejected: `{ accepted: false, requestId, reason: { scope, rule }, account: { consumed, remaining }, user: { consumed, remaining } }`
+   - Notice that `processedAt` is persisted internally in `consumption_records.processed_at` and is not part of the external consumption decision response body.
+
+4. **Idempotency & Deduplication Guarantees:**
+   - Every consumption request must specify a unique `requestId` (up to 128 chars).
+   - Re-submitting an identical request with the same `requestId`, `userId`, and `units` returns the exact historical decision with HTTP `200 OK`, without duplicate counter increments or redundant database records.
+   - Reusing a previously registered `requestId` with differing request parameters (different `userId` or `units`) violates idempotency and is rejected with `409 Conflict` (`RequestIdConflictError`).
+
+5. **Tenant Isolation & Security:**
+   - Submitting a request for a non-existent user or a user belonging to another tenant account returns `404 Not Found` (`User not found`), completely preventing enumeration or state discovery across accounts.
+   - Unexpected infrastructure or database failures return a safe, generic message (`500 Internal Server Error` with `{ "error": "Internal Server Error" }`) without leaking queries, internal errors, or connection details.
+
+---
+
+### 20.2 Endpoint Details: `POST /consumptions`
+
+#### Request Details
+- **Method:** `POST`
+- **Path:** `/consumptions`
+- **Headers:**
+  - `Authorization: Bearer <api_key>`
+  - `Content-Type: application/json`
+- **Body:**
+```json
+{
+  "userId": "usr_9f8e7d6c5b4a321012345678",
+  "units": 50,
+  "requestId": "req_8a7b6c5d4e3f210987654321"
+}
+```
+
+#### Field Specifications:
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `userId` | string | 1-64 chars (trimmed) | Identifier of the user consuming units |
+| `units` | number | Safe integer `> 0` | Quantity of quota units requested |
+| `requestId` | string | 1-128 chars (trimmed) | Client-generated idempotent idempotency key |
+
+#### Successful Acceptance Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Body:**
+```json
+{
+  "accepted": true,
+  "requestId": "req_8a7b6c5d4e3f210987654321",
+  "account": {
+    "consumed": 50,
+    "remaining": 99950
+  },
+  "user": {
+    "consumed": 50,
+    "remaining": 9950
+  }
+}
+```
+
+#### Successful Quota Rejection Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Body:**
+```json
+{
+  "accepted": false,
+  "requestId": "req_8a7b6c5d4e3f210987654321",
+  "reason": {
+    "scope": "user",
+    "rule": "max_per_request"
+  },
+  "account": {
+    "consumed": 50,
+    "remaining": 99950
+  },
+  "user": {
+    "consumed": 50,
+    "remaining": 9950
+  }
+}
+```
+
+#### Error Responses
+- `400 Bad Request`: Body is not a JSON object, missing mandatory fields (`userId`, `units`, `requestId`), unknown/extra fields provided (e.g. `accountId`), invalid `units` (<= 0, float, string, unsafe int), or empty/oversized string IDs.
+- `401 Unauthorized`: Missing or invalid Bearer API key (`WWW-Authenticate: Bearer`).
+- `404 Not Found`: Target `userId` does not exist or does not belong to the authenticated account (`User not found`), or parent account not found.
+- `409 Conflict`: `requestId` has already been used by this account with different payload data (`requestId has already been used with different request data`).
+- `500 Internal Server Error`: Generic internal server error message (`{ "error": "Internal Server Error" }`) on database or unexpected system failures.
+
+---
+
+## 21. Request History & Pagination API: `GET /requests` (Part 25)
+
+### 21.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+
+1. **Lightweight Offset Pagination via `hasMore` (No `COUNT(*)` CTE):**
+   - The endpoint queries `limit + 1` records directly using standard `LIMIT` and `OFFSET` clauses.
+   - If the query returns `limit + 1` rows, `hasMore` is set to `true` and the extra row is trimmed, leaving exactly `limit` items in the response.
+   - If the query returns $\le limit$ rows, `hasMore` is `false`.
+   - **Rationale:** This eliminates full table scans and expensive `COUNT(*)` windowing/aggregations, keeping database load minimal.
+
+2. **Deterministic Ordering with Tie-Breaking:**
+   - Results are strictly ordered by `processed_at DESC, id DESC`.
+   - In PostgreSQL, multiple requests processed in the same millisecond share identical timestamps. The primary key `id DESC` serves as the unambiguous, deterministic tie-breaker.
+   - Because `id` is a 64-bit integer (`BIGSERIAL`), it is returned as a JSON `string` to prevent IEEE 754 precision loss in JavaScript runtimes.
+
+3. **Known Limitation of Offset Pagination (Page Drift):**
+   - **Documented Trade-Off:** In an append-only log, if new consumption requests are accepted while a client pages through results with `offset`, previously seen records shift down. An item seen at the tail of page $N$ may reappear at the head of page $N+1$.
+   - This limitation is accepted as standard for offset-based pagination in this training milestone.
+
+4. **Search and Filter Semantics (Empty List vs 404):**
+   - `GET /requests` is a collection search endpoint, not a direct single-resource lookup.
+   - Filtering by a non-existent `userId` or a user belonging to another account returns an empty list (`items: []`, `hasMore: false`) with HTTP `200 OK`.
+   - Filtering by an empty month or a future month returns an empty list (`items: []`, `hasMore: false`) with HTTP `200 OK`.
+
+5. **Index Baseline Note:**
+   - Queries benefit from the composite index `idx_consumption_records_history(account_id, processed_at DESC, id DESC)` created in migration 001. No schema mutations or migrations are added in Part 25.
+
+---
+
+### 21.2 Endpoint Details: `GET /requests`
+
+#### Request Details
+- **Method:** `GET`
+- **Path:** `/requests`
+- **Headers:** `Authorization: Bearer <api_key>`
+- **Query Parameters:**
+  - `limit` *(optional)*: Safe integer between `1` and `100` (default: `20`).
+  - `offset` *(optional)*: Non-negative safe integer `>= 0` (default: `0`).
+  - `userId` *(optional)*: Filter by specific user identifier (1-64 chars, trimmed).
+  - `status` *(optional)*: Filter by request status (`'ACCEPTED'` or `'REJECTED'`).
+  - `month` *(optional)*: Filter by UTC calendar month in `YYYY-MM` format (1000-9999).
+
+#### Successful Response (`200 OK`)
+- **Status Code:** `200 OK`
+- **Headers:** `Content-Type: application/json; charset=utf-8`
+- **Body:**
+```json
+{
+  "items": [
+    {
+      "id": "105",
+      "requestId": "req_20261018_001",
+      "userId": "usr_ahmad",
+      "requestedUnits": 2,
+      "status": "ACCEPTED",
+      "rejectionReason": null,
+      "responseBody": {
+        "accepted": true,
+        "requestId": "req_20261018_001",
+        "account": { "consumed": 52, "remaining": 99948 },
+        "user": { "consumed": 12, "remaining": 9988 }
+      },
+      "processedAt": "2026-10-18T17:42:00.000Z"
+    },
+    {
+      "id": "104",
+      "requestId": "req_20261018_002",
+      "userId": "usr_sara",
+      "requestedUnits": 600,
+      "status": "REJECTED",
+      "rejectionReason": {
+        "scope": "user",
+        "rule": "max_per_request"
+      },
+      "responseBody": {
+        "accepted": false,
+        "requestId": "req_20261018_002",
+        "reason": {
+          "scope": "user",
+          "rule": "max_per_request"
+        },
+        "account": { "consumed": 50, "remaining": 99950 },
+        "user": { "consumed": 10, "remaining": 9990 }
+      },
+      "processedAt": "2026-10-18T17:40:00.000Z"
+    }
+  ],
+  "pagination": {
+    "limit": 20,
+    "offset": 0,
+    "hasMore": false
+  }
+}
+```
+
+#### Error Responses
+- `400 Bad Request`: Unknown query parameter, duplicate parameters (arrays), non-integer or out-of-bounds `limit` / `offset`, invalid `status`, or malformed `month` / `userId`.
+- `401 Unauthorized`: Missing or invalid Bearer API key.
+- `500 Internal Server Error`: Safe generic response on database or unexpected system errors.
+
+
+
 
 
 

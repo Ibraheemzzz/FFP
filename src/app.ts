@@ -41,7 +41,18 @@ import {
   validateUsageMonthQuery,
   UsageQueryValidationError,
 } from './usage.js';
-import { getUtcYearMonth } from './consumptions.js';
+import {
+  getUtcYearMonth,
+  validateConsumptionInput,
+  executeConsumption,
+  ConsumptionValidationError,
+  RequestIdConflictError,
+} from './consumptions.js';
+import {
+  validateRequestHistoryQuery,
+  getRequestHistory,
+  RequestQueryValidationError,
+} from './requests.js';
 
 export interface AppOptions {
   checkHealth: () => Promise<boolean>;
@@ -426,6 +437,70 @@ export function buildApp(options: AppOptions): FastifyInstance {
           return reply.code(404).send({ error: err.message });
         }
         console.error('Failed to get user usage due to an unexpected error:', err);
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 14. مسار معالجة طلب الاستهلاك واحتساب الحصص: POST /consumptions
+  app.post(
+    '/consumptions',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        const validatedInput = validateConsumptionInput(request.body);
+        const decision = await executeConsumption(
+          options.pool,
+          accountId,
+          validatedInput,
+          options.clock ? { clock: options.clock } : undefined
+        );
+
+        return reply.code(200).send(decision);
+      } catch (err) {
+        if (err instanceof ConsumptionValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        if (err instanceof UserNotFoundError || err instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: err.message });
+        }
+        if (err instanceof RequestIdConflictError) {
+          return reply.code(409).send({ error: err.message });
+        }
+
+        console.error('Failed to process consumption due to an unexpected error:', err);
+        return reply.code(500).send({ error: 'Internal Server Error' });
+      }
+    }
+  );
+
+  // 15. مسار استعلام سجل طلبات الاستهلاك وتقسيم الصفحات: GET /requests (Part 25)
+  app.get(
+    '/requests',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      if (!options.pool) {
+        return reply.code(500).send({ error: 'Database pool is not configured' });
+      }
+
+      const accountId = request.account!.id;
+
+      try {
+        const filter = validateRequestHistoryQuery(request.query);
+        const history = await getRequestHistory(options.pool, accountId, filter);
+        return reply.code(200).send(history);
+      } catch (err) {
+        if (err instanceof RequestQueryValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+
+        console.error('Failed to get request history due to an unexpected error:', err);
         return reply.code(500).send({ error: 'Internal Server Error' });
       }
     }

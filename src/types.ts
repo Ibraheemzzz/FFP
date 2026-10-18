@@ -132,3 +132,46 @@ export interface HistoricalUserUsageResponse {
   accountPlanAtLastRequest: HistoricalPlanSummary | null;
   lastRequestAt: string | null;
 }
+
+/**
+ * عنصر سجل طلب استهلاك مسجل
+ */
+export interface RequestHistoryItem {
+  id: string;
+  requestId: string;
+  userId: string;
+  requestedUnits: number;
+  status: 'ACCEPTED' | 'REJECTED';
+  rejectionReason: RejectionReason | null;
+  responseBody: ConsumptionDecision;
+  processedAt: string;
+}
+
+/**
+ * بيانات تقسيم الصفحات في سجل الطلبات
+ */
+export interface RequestHistoryPagination {
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+/**
+ * رد استعلام سجل الطلبات (GET /requests)
+ */
+export interface RequestHistoryResponse {
+  items: RequestHistoryItem[];
+  pagination: RequestHistoryPagination;
+}
+
+/**
+ * معلمات تصفية وتقسيم سجل الطلبات بعد التحقق منها
+ */
+export interface RequestHistoryFilter {
+  limit: number;
+  offset: number;
+  userId?: string;
+  status?: 'ACCEPTED' | 'REJECTED';
+  month?: string;
+}
+
