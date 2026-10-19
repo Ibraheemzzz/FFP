@@ -1,0 +1,390 @@
+{
+  "metadata": {
+    "timestamp": "2026-10-19T11:05:06.152Z",
+    "targetUrl": "http://127.0.0.1:3000",
+    "environment": {
+      "platform": "win32",
+      "osRelease": "10.0.19044",
+      "cpuModel": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+      "cpuCores": 12,
+      "totalMemoryGb": 15.78,
+      "benchmarkClientNodeVersion": "v24.13.0",
+      "serviceContainerNodeVersion": "v22.x (Docker node:22-alpine container)",
+      "postgresVersion": "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit"
+    },
+    "percentileMethod": "Nearest-Rank Method on fully resolved request latencies"
+  },
+  "summary": {
+    "totalScenarios": 5,
+    "totalRuns": 9,
+    "allAuditsPassed": true
+  },
+  "scenarios": {
+    "scenario_1_single_account": {
+      "name": "Single Account Under High Row-Lock Contention",
+      "description": "Measures throughput and queueing latency when multiple concurrent workers contend for the same tenant row lock.",
+      "runs": [
+        {
+          "scenarioId": "scenario_1_single_account",
+          "scenarioName": "Single Account Under High Row-Lock Contention",
+          "runIndex": 1,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 2541.44,
+          "throughputReqSec": 236.09,
+          "latencies": {
+            "min": 13.4,
+            "max": 95.94,
+            "avg": 62.8,
+            "p50": 62.46,
+            "p95": 68.25,
+            "p99": 90.61
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        },
+        {
+          "scenarioId": "scenario_1_single_account",
+          "scenarioName": "Single Account Under High Row-Lock Contention",
+          "runIndex": 2,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 2559.8,
+          "throughputReqSec": 234.39,
+          "latencies": {
+            "min": 10.74,
+            "max": 144.54,
+            "avg": 63.31,
+            "p50": 61.39,
+            "p95": 68.32,
+            "p99": 143.2
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        },
+        {
+          "scenarioId": "scenario_1_single_account",
+          "scenarioName": "Single Account Under High Row-Lock Contention",
+          "runIndex": 3,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 2397.33,
+          "throughputReqSec": 250.28,
+          "latencies": {
+            "min": 9.71,
+            "max": 66.4,
+            "avg": 59.27,
+            "p50": 59.47,
+            "p95": 63.2,
+            "p99": 65.37
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        }
+      ],
+      "aggregate": {
+        "avgThroughputReqSec": 240.25,
+        "avgP50LatencyMs": 61.11,
+        "avgP95LatencyMs": 66.59,
+        "avgP99LatencyMs": 99.73
+      }
+    },
+    "scenario_2_multi_tenant": {
+      "name": "Multi-Tenant Parallelism (Multiple Independent Accounts)",
+      "description": "Measures throughput and latency across multiple distinct tenant accounts with identical total requests and concurrency, sharing pool resources without row-lock contention.",
+      "runs": [
+        {
+          "scenarioId": "scenario_2_multi_tenant",
+          "scenarioName": "Multi-Tenant Parallelism (Multiple Independent Accounts)",
+          "runIndex": 1,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 930.8,
+          "throughputReqSec": 644.61,
+          "latencies": {
+            "min": 14.19,
+            "max": 44.31,
+            "avg": 23.09,
+            "p50": 22.39,
+            "p95": 31.37,
+            "p99": 38.69
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 10,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        },
+        {
+          "scenarioId": "scenario_2_multi_tenant",
+          "scenarioName": "Multi-Tenant Parallelism (Multiple Independent Accounts)",
+          "runIndex": 2,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 931.53,
+          "throughputReqSec": 644.1,
+          "latencies": {
+            "min": 11.37,
+            "max": 41.23,
+            "avg": 23.12,
+            "p50": 22.52,
+            "p95": 31.8,
+            "p99": 35.57
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 10,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        },
+        {
+          "scenarioId": "scenario_2_multi_tenant",
+          "scenarioName": "Multi-Tenant Parallelism (Multiple Independent Accounts)",
+          "runIndex": 3,
+          "totalRequests": 600,
+          "concurrency": 15,
+          "durationMs": 894.39,
+          "throughputReqSec": 670.85,
+          "latencies": {
+            "min": 12.86,
+            "max": 34.26,
+            "avg": 22.2,
+            "p50": 21.89,
+            "p95": 28.41,
+            "p99": 32.56
+          },
+          "outcomes": {
+            "accepted": 600,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 10,
+            "totalLedgerUnits": 600,
+            "totalAccountCounterUnits": 600,
+            "totalUserCounterUnits": 600,
+            "discrepancies": []
+          }
+        }
+      ],
+      "aggregate": {
+        "avgThroughputReqSec": 653.19,
+        "avgP50LatencyMs": 22.27,
+        "avgP95LatencyMs": 30.53,
+        "avgP99LatencyMs": 35.61
+      }
+    },
+    "scenario_3_quota_exhaustion": {
+      "name": "Quota Exhaustion Transition",
+      "description": "Evaluates performance and accuracy when an allowance limit is exhausted, transitioning from acceptance to rejection without counter corruption.",
+      "runs": [
+        {
+          "scenarioId": "scenario_3_quota_exhaustion",
+          "scenarioName": "Quota Exhaustion Transition",
+          "runIndex": 1,
+          "totalRequests": 300,
+          "concurrency": 10,
+          "durationMs": 1092.52,
+          "throughputReqSec": 274.59,
+          "latencies": {
+            "min": 8.34,
+            "max": 43.33,
+            "avg": 35.88,
+            "p50": 35.33,
+            "p95": 40.97,
+            "p99": 41.62
+          },
+          "outcomes": {
+            "accepted": 50,
+            "quotaRejected": 250,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 100,
+            "totalAccountCounterUnits": 100,
+            "totalUserCounterUnits": 100,
+            "discrepancies": []
+          }
+        }
+      ],
+      "aggregate": {
+        "avgThroughputReqSec": 274.59,
+        "avgP50LatencyMs": 35.33,
+        "avgP95LatencyMs": 40.97,
+        "avgP99LatencyMs": 41.62
+      }
+    },
+    "scenario_4_idempotent_retries": {
+      "name": "High-Rate Idempotent Retries (Deduplication Path)",
+      "description": "Measures deduplication retrieval performance when replaying identical requestIds, proving invariant counters.",
+      "runs": [
+        {
+          "scenarioId": "scenario_4_idempotent_retries",
+          "scenarioName": "High-Rate Idempotent Retries (Deduplication Path)",
+          "runIndex": 1,
+          "totalRequests": 500,
+          "concurrency": 15,
+          "durationMs": 810.08,
+          "throughputReqSec": 617.22,
+          "latencies": {
+            "min": 6.82,
+            "max": 58.79,
+            "avg": 24,
+            "p50": 21.74,
+            "p95": 40.59,
+            "p99": 50.29
+          },
+          "outcomes": {
+            "accepted": 500,
+            "quotaRejected": 0,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 10,
+            "totalAccountCounterUnits": 10,
+            "totalUserCounterUnits": 10,
+            "discrepancies": []
+          }
+        }
+      ],
+      "aggregate": {
+        "avgThroughputReqSec": 617.22,
+        "avgP50LatencyMs": 21.74,
+        "avgP95LatencyMs": 40.59,
+        "avgP99LatencyMs": 50.29
+      }
+    },
+    "scenario_5_plan_mutation": {
+      "name": "In-Flight Plan Mutation Under Concurrent Load",
+      "description": "Tests in-flight plan upgrade during active concurrent consumption streams under row-lock contention, recording timestamp causality and verifying immediate effect without corruption.",
+      "runs": [
+        {
+          "scenarioId": "scenario_5_plan_mutation",
+          "scenarioName": "In-Flight Plan Mutation Under Concurrent Load",
+          "runIndex": 1,
+          "totalRequests": 400,
+          "concurrency": 10,
+          "durationMs": 1596.49,
+          "throughputReqSec": 250.55,
+          "latencies": {
+            "min": 7.14,
+            "max": 101.06,
+            "avg": 39.41,
+            "p50": 37.08,
+            "p95": 51.64,
+            "p99": 96.79
+          },
+          "outcomes": {
+            "accepted": 250,
+            "quotaRejected": 150,
+            "conflict": 0,
+            "clientError": 0,
+            "serverError": 0,
+            "timeoutError": 0,
+            "networkError": 0
+          },
+          "audit": {
+            "passed": true,
+            "accountsAudited": 1,
+            "totalLedgerUnits": 2500,
+            "totalAccountCounterUnits": 2500,
+            "totalUserCounterUnits": 2500,
+            "discrepancies": []
+          }
+        }
+      ],
+      "aggregate": {
+        "avgThroughputReqSec": 250.55,
+        "avgP50LatencyMs": 37.08,
+        "avgP95LatencyMs": 51.64,
+        "avgP99LatencyMs": 96.79
+      }
+    }
+  }
+}

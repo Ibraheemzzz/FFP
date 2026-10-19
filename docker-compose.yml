@@ -1,21 +1,64 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: usage_metering_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_password
       POSTGRES_DB: usage_metering_dev
     ports:
-      - "127.0.0.1:5433:5432"
+      - "${POSTGRES_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d usage_metering_dev"]
       interval: 2s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 2s
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - metering_network
+
+  service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://postgres:postgres_password@postgres:5432/usage_metering_dev
+    ports:
+      - "${PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e 'fetch(\"http://127.0.0.1:3000/health/ready\").then(r => { if (!r.ok) process.exit(1); return r.json(); }).then(data => process.exit(data.ready === true && data.database === \"connected\" ? 0 : 1)).catch(() => process.exit(1))'"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - metering_network
+
+  demo-client:
+    build:
+      context: ./demo-client
+      dockerfile: Dockerfile
+    environment:
+      API_BASE_URL: http://service:3000
+    depends_on:
+      service:
+        condition: service_healthy
+    networks:
+      - metering_network
+    stdin_open: true
+    tty: true
 
 volumes:
   postgres_data:
+
+networks:
+  metering_network:
+    driver: bridge
