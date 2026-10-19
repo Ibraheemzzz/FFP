@@ -1,5 +1,5 @@
 // src/requests.ts
-// منطق استعلام وتصفية سجل طلبات الاستهلاك وتقسيم الصفحات (Part 25: Request History & Pagination)
+// Query, filtering, and pagination logic for consumption request history (Part 25: Request History & Pagination)
 
 import type { DbExecutor } from './db.js';
 import type {
@@ -13,7 +13,7 @@ import type {
 import { getUtcMonthDateRange } from './usage.js';
 
 /**
- * خطأ التحقق من صحة معلمات استعلام سجل الطلبات
+ * Thrown when request history query parameters fail validation
  */
 export class RequestQueryValidationError extends Error {
   constructor(message: string) {
@@ -23,27 +23,27 @@ export class RequestQueryValidationError extends Error {
 }
 
 /**
- * قائمة المعلمات المسموح بها صراحة في استعلام سجل الطلبات
+ * Explicit whitelist of allowed query parameters for request history
  */
 const ALLOWED_REQUESTS_QUERY_PARAMS = new Set(['limit', 'offset', 'userId', 'status', 'month']);
 
 /**
- * صيغة التعبير النمطي للتحقق من الأعداد العشرية غير السالبة (أرقام فقط دون إشارات أو كسور)
+ * Strict regex for non-negative integers (digits only, no signs or decimals)
  */
 const NON_NEGATIVE_INTEGER_REGEX = /^\d+$/;
 
 /**
- * صيغة التعبير النمطي للتحقق من تنسيق الشهر التقويمي YYYY-MM
+ * Regex for UTC calendar month format YYYY-MM
  */
 const YEAR_MONTH_REGEX = /^[1-9]\d{3}-(0[1-9]|1[0-2])$/;
 
 /**
- * دالة التحقق الصارم من معلمات استعلام السجل (Query Validation):
- * 1. ترفض أي معاملات غير معرّفة أو مكررة (مصفوفات).
- * 2. تفحص limit و offset كنصوص أرقام غير سالبة قبل التحويل، وتتحقق من كونهما أعداداً صحيحة آمنة ضمن الحدود.
- * 3. تفحص userId (نص غير فارغ بحد أقصى 64 محرفاً).
- * 4. تفحص status (حصراً 'ACCEPTED' أو 'REJECTED').
- * 5. تفحص month (صيغة YYYY-MM سنة من 1000 إلى 9999).
+ * Strict query parameter validator:
+ * 1. Rejects unknown or duplicate parameters (arrays).
+ * 2. Validates limit and offset as non-negative safe integers.
+ * 3. Validates userId (non-empty string, max 64 chars).
+ * 4. Validates status (strictly 'ACCEPTED' or 'REJECTED').
+ * 5. Validates month (YYYY-MM format, year 1000-9999).
  */
 export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilter {
   if (typeof query !== 'object' || query === null || Array.isArray(query)) {
@@ -62,7 +62,7 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
     }
   }
 
-  // 1. التحقق من limit
+  // 1. Validate limit
   let limit = 20;
   if ('limit' in record && record.limit !== undefined) {
     const rawLimit = record.limit;
@@ -76,7 +76,7 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
     limit = parsedLimit;
   }
 
-  // 2. التحقق من offset
+  // 2. Validate offset
   let offset = 0;
   if ('offset' in record && record.offset !== undefined) {
     const rawOffset = record.offset;
@@ -90,7 +90,7 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
     offset = parsedOffset;
   }
 
-  // 3. التحقق من userId (اختياري)
+  // 3. Validate userId (optional)
   let userId: string | undefined;
   if ('userId' in record && record.userId !== undefined) {
     if (typeof record.userId !== 'string') {
@@ -103,7 +103,7 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
     userId = trimmedUserId;
   }
 
-  // 4. التحقق من status (اختياري)
+  // 4. Validate status (optional)
   let status: 'ACCEPTED' | 'REJECTED' | undefined;
   if ('status' in record && record.status !== undefined) {
     if (typeof record.status !== 'string' || (record.status !== 'ACCEPTED' && record.status !== 'REJECTED')) {
@@ -112,7 +112,7 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
     status = record.status;
   }
 
-  // 5. التحقق من month (اختياري)
+  // 5. Validate month (optional)
   let month: string | undefined;
   if ('month' in record && record.month !== undefined) {
     if (typeof record.month !== 'string' || !YEAR_MONTH_REGEX.test(record.month)) {
@@ -130,9 +130,6 @@ export function validateRequestHistoryQuery(query: unknown): RequestHistoryFilte
   };
 }
 
-/**
- * صف نتيجة استعلام جدول consumption_records من قاعدة البيانات
- */
 interface ConsumptionRecordRow {
   id: string;
   request_id: string;
@@ -146,14 +143,14 @@ interface ConsumptionRecordRow {
 }
 
 /**
- * تنفيذ استعلام سجل الطلبات وتقسيم الصفحات:
- * - يستعلم جدول consumption_records مباشرة بـ SELECT واحد.
- * - يطبّق عزل المستأجر account_id = $1 دائماً.
- * - يضيف المرشحات الاختيارية ديناميكياً باستخدام المعاملات المرقّمة $1, $2...
- * - يطلب limit + 1 صفاً لتحديد قيمة hasMore بدقة.
- * - يرتب النتائج بـ ORDER BY processed_at DESC, id DESC لضمان حتمية الترتيب.
- * - يعيد id كنص لتفادي فقد الدقة في BIGSERIAL.
- * - يعيد response_body المحفوظ كما هو دون إعادة احتساب الأرصدة.
+ * Executes request history query with pagination:
+ * - Direct SELECT query on consumption_records
+ * - Strictly enforces tenant isolation account_id = $1
+ * - Dynamically appends validated optional filters using parameterized placeholders
+ * - Fetches limit + 1 rows to determine hasMore cleanly without COUNT(*) overhead
+ * - Deterministic ordering via ORDER BY processed_at DESC, id DESC
+ * - Returns id as string to preserve BIGSERIAL 64-bit precision
+ * - Emits stored response_body snapshot directly without recalculation
  */
 export async function getRequestHistory(
   executor: DbExecutor,
@@ -182,7 +179,7 @@ export async function getRequestHistory(
     params.push(end.toISOString());
   }
 
-  // جلب limit + 1 صفاً لتحديد وجود صفحات تالية
+  // Fetch limit + 1 rows to determine hasMore
   const fetchLimit = filter.limit + 1;
   const limitParamPlaceholder = `$${paramIndex++}`;
   params.push(fetchLimit);

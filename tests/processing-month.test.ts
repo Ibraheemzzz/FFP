@@ -1,5 +1,5 @@
 // tests/processing-month.test.ts
-// اختبارات دالة تحديد شهر المعالجة (Part 17: Processing Month)
+// Tests for processing month determination (Part 17: Processing Month)
 
 import assert from 'node:assert/strict';
 import { getUtcYearMonth } from '../src/consumptions.js';

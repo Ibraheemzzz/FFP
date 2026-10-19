@@ -477,9 +477,9 @@ Upon database migration, the service guarantees the availability of two public b
    - The `perRequestLimit` parameter defines the maximum consumption quota (`units`) allowed in a single discrete consumption transaction (`POST /consumptions`).
    - It is evaluated on a per-request basis to prevent a single excessive or anomalous API call from draining an entire monthly allocation.
    - It is strictly **not** a rate limit on concurrent requests, nor a throughput capacity benchmark of the server or network.
-2. **Design Choices vs Literal Handbook Requirements (`[مرن — برّر]`):**
+2. **Design Choices vs Literal Handbook Requirements (`[Flexible — Justified]`):**
    - The default plan values (such as `100,000` monthly / `1,000` per request for Accounts, and `10,000` monthly / `500` per request for Users) are **adopted design choices** representing realistic illustrative product tiers.
-   - These figures are intentionally flexible architectural decisions (`[مرن — برّر]`) and are not literal mandatory constants prescribed by the guide.
+   - These figures are intentionally flexible architectural decisions (`[Flexible — Justified]`) and are not literal mandatory constants prescribed by the guide.
    - Future extensions (such as tier upgrades or custom enterprise limits) can configure different values without altering the core metering invariants.
 
 ### 8.2 Distinct Idempotency Mechanisms
@@ -548,7 +548,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 9. Custom Plans API: `POST /plans` & `PATCH /plans/:planId` (Part 13)
 
-### 9.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 9.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Identifier Generation & Uniqueness Barrier:**
    - Plan identifiers are generated in the format `plan_<24 hex characters>` (29 characters total, safely within `VARCHAR(64)`).
@@ -664,10 +664,10 @@ The response returns the full array of matching plans without pagination in this
 
 ## 10. Plan Assignments & Switching: `PATCH /account/plan` (Part 14)
 
-### 10.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 10.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Direct Current Plan Column Representation:**
-   - The current plan is stored directly as `plan_id` on the `accounts` and `users` tables, adhering to the simplest correct design (`أوضح كود صحيح`).
+   - The current plan is stored directly as `plan_id` on the `accounts` and `users` tables, adhering to the simplest correct design (`clearest correct code`).
    - A dedicated historical assignment table is omitted as decision history will be retained in `consumption_records`.
 2. **Storage of Consumed vs Calculated Remaining:**
    - Only the cumulative consumed units (`total_units`) are persisted in monthly counter tables (`account_monthly_usage` and `user_monthly_usage`).
@@ -730,7 +730,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 11. Plan Changes, Transactional Locking & Immediate Effect (Part 15)
 
-### 11.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 11.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Centralized Transaction Runner (`withAccountLock`):**
    - All three plan-altering mutations (`updateCustomPlan`, `updateAccountPlan`, `updateUserPlan`) execute strictly within an atomic database transaction managed by `withAccountLock` in `src/db.ts`.
@@ -760,7 +760,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 12. Consumption Input Validation: `validateConsumptionInput` (Part 16)
 
-### 12.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 12.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Clear Scope Boundary & No Premature Route Execution:**
    - In Part 16, validation logic is encapsulated purely in `validateConsumptionInput` within `src/consumptions.ts` and tested directly via isolated unit tests.
@@ -787,18 +787,18 @@ The response returns the full array of matching plans without pagination in this
    - The payload must be a JSON object (not an array, primitive, or null).
    - Strict whitelisting allows only `userId`, `units`, and `requestId`. Any unexpected or case-mismatched fields (`userid`, `Units`, `RequestId`, `user_id`, `request_id`) or injected tenant fields (`accountId`) are rejected with `ConsumptionValidationError`.
 6. **Subsequent Roadmap Progression:**
-   - **Part 17:** شهر المعالجة (Processing Month — UTC Calendar calculation & monthly usage tracking).
-   - **Part 18:** تقييم القواعد (Quota Rules Evaluation — deterministic evaluation engine).
-   - **Part 19:** المستهلك والمتبقي (Remaining Quota Calculation — dynamic floor calculation without zeroing).
-   - **Part 20:** المعاملة الذرية (Atomic Database Transaction — all-or-nothing ledger persistence).
-   - **Part 21:** أقفال التزامن (Concurrency & Account Locking Protocol).
-   - **Part 22:** منع تكرار الاستهلاك (Deduplication & Idempotent Retry Engine via `requestId`).
+   - **Part 17:** Processing Month (UTC Calendar calculation & monthly usage tracking).
+   - **Part 18:** Quota Rules Evaluation (deterministic evaluation engine).
+   - **Part 19:** Consumed and Remaining Quotas (dynamic floor calculation without zeroing).
+   - **Part 20:** The Atomic Transaction (all-or-nothing ledger persistence).
+   - **Part 21:** Concurrency & Account Locking Protocol.
+   - **Part 22:** Deduplication & Idempotent Retry Engine via `requestId`.
 
 ---
 
 ## 13. Processing Month Determination: `getUtcYearMonth` (Part 17)
 
-### 13.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 13.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Strict UTC Calendar Month Standard:**
    - The quota tracking cycle is strictly governed by the Gregorian calendar month in UTC (`00:00:00.000Z` on the 1st of the month to `23:59:59.999Z` on the last day of the month).
@@ -806,7 +806,7 @@ The response returns the full array of matching plans without pagination in this
    - The month is represented in string format as `YYYY-MM` (e.g., `'2026-10'`), matching the storage format and database check constraint on monthly usage tables.
 2. **Intentional Application Year Range (1000–9999):**
    - The application enforces a 4-digit positive year range `1000 <= year <= 9999`.
-   - **Architecture Distinction:** This is an intentional application-level design choice (`[مرن — برّر]`) suitable for modern service lifecycles, and is not a constraint strictly imposed by the database regular expression (`CHECK (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')`, which verifies 4 numeric digits). The application bounds ensure clean calendar semantics and prevent zero/negative year anomalies.
+   - **Architecture Distinction:** This is an intentional application-level design choice (`[Flexible — Justified]`) suitable for modern service lifecycles, and is not a constraint strictly imposed by the database regular expression (`CHECK (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')`, which verifies 4 numeric digits). The application bounds ensure clean calendar semantics and prevent zero/negative year anomalies.
 3. **Single Timestamp Capture Post-Lock:**
    - In the future end-to-end consumption transaction (Parts 20 & 21), execution will capture a single, immutable timestamp `processedAt = new Date()` strictly **after acquiring the account lock**.
    - This exact same timestamp instance is passed to `getUtcYearMonth(processedAt)` to determine the accounting period, and persisted directly to `consumption_records.processed_at`.
@@ -819,13 +819,13 @@ The response returns the full array of matching plans without pagination in this
 
 ## 14. Quota Rules Evaluation: `evaluateQuotaRules` (Part 18)
 
-### 14.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 14.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Pure Domain Function Isolation:**
    - Quota rules evaluation is encapsulated in `evaluateQuotaRules` in `src/consumptions.ts`.
    - It is an entirely pure domain function: no database calls, no network I/O, and no side effects.
    - **Input Contract Specification:** The function expects pre-validated domain inputs: `requestedUnits` must be a positive safe integer (`> 0`), while plan limits and consumed counters must be non-negative safe integers (`>= 0`). It is an internal evaluation engine and does not replace the runtime input validator `validateConsumptionInput`.
-2. **Deterministic Evaluation Order (`[مرن — برّر]`):**
+2. **Deterministic Evaluation Order (`[Flexible — Justified]`):**
    - When a request violates multiple rules simultaneously, the service deterministically reports a single decisive reason following this prioritized order:
      1. **Account Per-Request Limit:** `scope: 'account'`, `rule: 'max_per_request'`
      2. **User Per-Request Limit:** `scope: 'user'`, `rule: 'max_per_request'`
@@ -851,7 +851,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 15. Consumed and Remaining Quotas: `calculateUsageSnapshot` & Monthly Usage Queries (Part 19)
 
-### 15.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 15.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Dynamic Remaining Calculation:**
    - Remaining quota is never stored in the database. It is calculated dynamically upon query or evaluation using:
@@ -883,7 +883,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 16. The Atomic Transaction: `executeConsumption` (Part 20)
 
-### 16.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 16.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **All-or-Nothing Guarantee Across Three Database Writes:**
    - In consumption execution, three discrete database operations are inextricably bound:
@@ -925,7 +925,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 17. Concurrency & Account Locking Protocol: `withAccountLock` (Part 21)
 
-### 17.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 17.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Pessimistic Account-Level Locking Standard:**
    - To eliminate race conditions, double spending, and quota over-allocation across both shared account quotas and individual user quotas, all operations that evaluate consumption or alter plan configurations acquire an exclusive row lock on the parent account:
@@ -956,11 +956,11 @@ The response returns the full array of matching plans without pagination in this
 
 ## 18. Idempotency Key & Deduplication Protocol: `requestId` (Part 22)
 
-### 18.1 Client Responsibility Standard (`[إلزامي]`)
+### 18.1 Client Responsibility Standard (`[Mandatory]`)
 - **Caller Obligation:** The calling application (Account tenant) is strictly responsible for reusing the identical `requestId` when retrying the same operation after network timeouts, client disconnects, or dropped HTTP responses.
 - **Fresh Request Semantics:** Submitting a newly generated `requestId` is treated by the service as an independent, fresh consumption request, which will consume quota and evaluate limits anew.
 
-### 18.2 Architectural Principles & Deduplication Semantics (`[مرن — برّر]`)
+### 18.2 Architectural Principles & Deduplication Semantics (`[Flexible — Justified]`)
 
 1. **Pre-Evaluation Check Order:**
    - Immediately after acquiring the account row lock, and prior to querying user records, plan definitions, or usage counters, the service queries:
@@ -1004,7 +1004,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 19. Get Current Usage API: `GET /account/usage` & `GET /users/:userId/usage` (Part 23)
 
-### 19.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 19.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Strict Current UTC Calendar Month Scope:**
    - In Part 23, both usage endpoints strictly represent the **current UTC calendar month** only (`getUtcYearMonth()`).
@@ -1024,7 +1024,7 @@ The response returns the full array of matching plans without pagination in this
    - In `GET /account/usage`, the account identity is derived strictly from the authenticated token (`request.account.id`).
    - In `GET /users/:userId/usage`, the query includes `WHERE u.id = $1 AND u.account_id = $2`. Attempting to access a user belonging to another tenant yields 0 rows, returning `404 Not Found` (`User not found`) with zero data leak.
 
-5. **Informational Nature Disclaimer (`[إلزامي]`)**:
+5. **Informational Nature Disclaimer (`[Mandatory]`)**:
    - The usage snapshots returned by `GET /account/usage` and `GET /users/:userId/usage` are purely informational reflecting database state at the exact moment of query.
    - **No Reservation Guarantee:** Reading available balance does **not** reserve units or guarantee acceptance for subsequent consumption requests. Concurrent requests may exhaust remaining allowance before a client's write request arrives. Actual quota deduction and permission are resolved exclusively inside the atomic `executeConsumption` transaction under the tenant row lock.
 
@@ -1158,7 +1158,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 20. Consumption Evaluation & Metering API: `POST /consumptions`
 
-### 20.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 20.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Authentication as Single Source of Account Identity:**
    - The account identity is extracted strictly and exclusively from the authenticated Bearer API key (`request.account.id`).
@@ -1261,7 +1261,7 @@ The response returns the full array of matching plans without pagination in this
 
 ## 21. Request History & Pagination API: `GET /requests` (Part 25)
 
-### 21.1 Architectural Principles & Design Decisions (`[مرن — برّر]`)
+### 21.1 Architectural Principles & Design Decisions (`[Flexible — Justified]`)
 
 1. **Lightweight Offset Pagination via `hasMore` (No `COUNT(*)` CTE):**
    - The endpoint queries `limit + 1` records directly using standard `LIMIT` and `OFFSET` clauses.
@@ -1405,6 +1405,28 @@ The response returns the full array of matching plans without pagination in this
 - **Statement Timeout (`57014`) & Lock Timeout (`55P03`):** Any statement or lock timeout occurring inside `withAccountLock` aborts the transaction immediately.
 - **Atomic Rollback:** The transaction is rolled back via `ROLLBACK`, guaranteeing zero partial deduction and pristine quota state.
 - **Clean Discard on Catastrophic Failure:** If a transaction failure cannot be cleanly rolled back, the client connection is destroyed (`client.release(true)`), preventing poisoned connections from returning to the pool.
+
+---
+
+## 23. Standalone Demo Client Integration & Scenarios (Part 27)
+
+### 23.1 Architectural Principles
+- **Package Isolation (`demo-client/`):** The demo client is structured as an independent subproject with its own `package.json`, `tsconfig.json`, and `README.md`, located completely outside the backend's `src/` and `tests/` directories.
+- **Pure HTTP Integration:** The client interacts with the service strictly via standard HTTP `fetch` calls, simulating a real external consumer without direct database access or internal code coupling.
+- **Automated Verification:** The entire integration lifecycle is covered by an automated test suite ([demo-client/tests/demo.test.ts](file:///d:/FFP/demo-client/tests/demo.test.ts)) asserting all business logic invariants across the 6 mandatory scenarios.
+
+### 23.2 Integration Scenarios Walkthrough (Approved 7-Step Sequence)
+1. **Account Registration & Session Storage (`POST /accounts`):** The client registers an account, extracts the returned secret API key (`ffp_live_...`), and safely stores it in session state without logging to stdout or report tables. Authentication is verified via `GET /account/me`.
+2. **Initial Account & User Plan Setup (`POST /plans`, `PATCH /account/plan`, `POST /users`):**
+   - Account plan is configured from the start with `monthlyLimit: 10` and `perRequestLimit: 20` via `PATCH /account/plan`.
+   - User 1 (**Ahmed**) assigned the default public plan (`plan_default_user`: `monthlyLimit: 10000`, `perRequestLimit: 500`).
+   - User 2 (**Sara**) assigned a custom plan with strict caps (`monthlyLimit: 30`, `perRequestLimit: 5`).
+3. **Acceptance Scenario (`POST /consumptions`):** Ahmed consumes 2 units (within limits), returning `200 OK` with `accepted: true`. Counters update atomically: Ahmed consumed = 2, Account consumed = 2 (remaining = 8).
+4. **User-Level Quota Rejection (`POST /consumptions`):** Sara attempts to consume 6 units (exceeding her per-request limit of 5). The service returns `200 OK` with `accepted: false` and explicit reason `{ "scope": "user", "rule": "max_per_request" }`. Zero units are deducted (Sara = 0, Account = 2).
+5. **Account-Level Quota Rejection (`POST /consumptions`):** Ahmed requests 9 units. While Ahmed's user limits allow 9, the shared account only has 8 units remaining. The request is rejected with `{ "scope": "account", "rule": "monthly_allowance" }`. Zero units are deducted (Ahmed = 2, Account = 2).
+6. **Dynamic Plan Mutation & Re-evaluation (`PATCH /plans/:planId`, `POST /consumptions`):** Sara's plan is updated via API to `perRequestLimit: 10`. Her request of 6 units is re-submitted with a new request ID and is immediately accepted (`accepted: true`). Counters update: Sara consumed = 6 (remaining = 24), Account consumed = 8 (remaining = 2).
+7. **Strict Balance & Audit Verification (`GET /account/usage`, `GET /users/:userId/usage`, `GET /requests`):** Final balances are strictly verified: Account consumed = 8 (remaining = 2), Ahmed consumed = 2, Sara consumed = 6. All 4 request records in `GET /requests` are verified to confirm that rejections did not mutate usage counters.
+
 
 
 

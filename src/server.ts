@@ -4,7 +4,7 @@ import { initEnvironment, loadConfig, type AppConfig } from './config.js';
 import { createPool, checkDatabaseHealth } from './db.js';
 import { runMigrations } from './migrator.js';
 
-// 1. تهيئة ملف البيئة وقراءة الإعدادات عند الإقلاع (Fail-Fast)
+// 1. Initialize environment file and validate configuration on startup (Fail-Fast)
 let config: AppConfig;
 try {
   initEnvironment();
@@ -14,10 +14,10 @@ try {
   process.exit(1);
 }
 
-// 2. إنشاء مجموعة اتصالات قاعدة البيانات
+// 2. Create database connection pool
 const pool = createPool(config.DATABASE_URL);
 
-// 3. فحص الاتصال بالقاعدة قبل بدء الخادم (Startup Pre-flight Check)
+// 3. Verify database connectivity before starting server (Startup Pre-flight Check)
 const isDbConnected = await checkDatabaseHealth(pool);
 if (!isDbConnected) {
   console.error('Failed to connect to database during startup. Cleaning up pool and exiting...');
@@ -25,7 +25,7 @@ if (!isDbConnected) {
   process.exit(1);
 }
 
-// 4. تشغيل مهاجرات قاعدة البيانات قبل قبول أي طلبات (Schema Migration Runner)
+// 4. Run database migrations before accepting requests (Schema Migration Runner)
 try {
   await runMigrations(pool);
 } catch {
@@ -34,13 +34,13 @@ try {
   process.exit(1);
 }
 
-// 5. إنشاء التطبيق مع تمرير دالة فحص الجاهزية ومجموعة اتصالات القاعدة
+// 5. Instantiate application with health check and connection pool
 const app = buildApp({
   checkHealth: () => checkDatabaseHealth(pool),
   pool,
 });
 
-// 6. بدء الاستماع لطلبات الشبكة وتنظيف الموارد إذا فشل الاستماع
+// 6. Start listening for incoming HTTP requests and clean up if listening fails
 try {
   await app.listen({ port: config.PORT, host: config.HOST });
   console.log(`[Fastify + TypeScript] Server is running on http://${config.HOST}:${config.PORT}`);
@@ -50,7 +50,7 @@ try {
   process.exit(1);
 }
 
-// 7. معالجة الإغلاق المنظم لمجموعة الاتصالات والخادم (Graceful Shutdown)
+// 7. Handle graceful shutdown for application and database connections
 const handleShutdown = async (signal: string) => {
   console.log(`\nReceived ${signal}. Shutting down server gracefully...`);
   let hasFailure = false;

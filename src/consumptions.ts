@@ -1,5 +1,5 @@
 // src/consumptions.ts
-// منطق التحقق ومعالجة طلبات الاستهلاك (Consumption Handling & Validation)
+// Consumption request validation, rule evaluation, and transactional metering engine
 
 import type pg from 'pg';
 import type {
@@ -15,7 +15,7 @@ import { getAccessiblePlan } from './plans.js';
 import { getUserById, UserNotFoundError } from './users.js';
 
 /**
- * خطأ مخصص لفشل التحقق من مدخلات الاستهلاك
+ * Thrown on consumption request input validation failures
  */
 export class ConsumptionValidationError extends Error {
   constructor(message: string) {
@@ -25,8 +25,8 @@ export class ConsumptionValidationError extends Error {
 }
 
 /**
- * خطأ تعارض معرّف الطلب: يُرمى عند إعادة استخدام نفس requestId لطلب يحمل بيانات مختلفة
- * (يُترجم لاحقاً إلى HTTP 409 Conflict عند ربط مسار الـ API)
+ * Thrown when reusing a requestId with mismatched request payload
+ * Maps to HTTP 409 Conflict in route layer
  */
 export class RequestIdConflictError extends Error {
   constructor(message = 'requestId has already been used with different request data') {
@@ -36,28 +36,18 @@ export class RequestIdConflictError extends Error {
 }
 
 /**
- * قائمة الحقول المسموح بها صراحة في طلب الاستهلاك لمنع أي حقول إضافية أو خاطئة
+ * Explicit whitelist of allowed fields in consumption request body
  */
 const ALLOWED_CONSUMPTION_FIELDS = new Set(['userId', 'units', 'requestId']);
 
 /**
- * دالة التحقق الصارم من مدخلات طلب الاستهلاك عند التشغيل (Runtime Validation)
- * 
- * القواعد المطبقة:
- * 1. جسم الطلب كائن JSON صالح وغير فارغ وليس مصفوفة.
- * 2. رفض أي حقول غير معرّفة أو مكتوبة بحالة أحرف مختلفة (Strict Field Checking).
- * 3. وجود الحقول الإلزامية الثلاثة: userId, units, requestId.
- * 4. التحقق من المقدار (units):
- *    - typeof units === 'number' && Number.isSafeInteger(units) && units > 0
- *    - يضمن أن القيمة عدد صحيح آمن وموجب تماماً دون تحويل ضمني للنصوص، ويمنع 0 و-1 و1.5 وNaN وInfinity.
- * 5. التحقق من معرف المستخدم (userId):
- *    - نص غير فارغ بعد إزالة المسافات الطرفية (trim).
- *    - لا يتجاوز 64 محرفاً.
- * 6. التحقق من معرف الطلب (requestId):
- *    - نص غير فارغ بعد إزالة المسافات الطرفية (trim).
- *    - لا يتجاوز 128 محرفاً.
- *    - إزالة المسافات الطرفية تطبّق أيضاً على requestId لأن قيمته المجرّدة تحدد هوية الطلب
- *      عند تطبيق منع التكرار (Deduplication / Idempotency) في الجزء 22.
+ * Validates consumption request body at runtime:
+ * 1. Body must be a non-empty, non-array JSON object.
+ * 2. Rejects unknown or case-mismatched fields.
+ * 3. Requires: userId, units, requestId.
+ * 4. units: typeof units === 'number' && Number.isSafeInteger(units) && units > 0
+ * 5. userId: non-empty string after trim, max 64 characters.
+ * 6. requestId: non-empty string after trim, max 128 characters.
  */
 export function validateConsumptionInput(body: unknown): ConsumptionRequest {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -85,7 +75,7 @@ export function validateConsumptionInput(body: unknown): ConsumptionRequest {
     throw new ConsumptionValidationError('requestId is required');
   }
 
-  // التحقق من userId
+  // Validate userId
   if (typeof record.userId !== 'string') {
     throw new ConsumptionValidationError('userId must be a string');
   }
@@ -97,13 +87,13 @@ export function validateConsumptionInput(body: unknown): ConsumptionRequest {
     throw new ConsumptionValidationError('userId must not exceed 64 characters');
   }
 
-  // التحقق من units: عدد صحيح آمن موجب
+  // Validate units: positive safe integer
   const units = record.units;
   if (typeof units !== 'number' || !Number.isSafeInteger(units) || units <= 0) {
     throw new ConsumptionValidationError('units must be a positive safe integer greater than zero');
   }
 
-  // التحقق من requestId
+  // Validate requestId
   if (typeof record.requestId !== 'string') {
     throw new ConsumptionValidationError('requestId must be a string');
   }
@@ -123,15 +113,12 @@ export function validateConsumptionInput(body: unknown): ConsumptionRequest {
 }
 
 /**
- * استخراج السنة والشهر بتوقيت UTC بصيغة YYYY-MM
- * 
- * القواعد المطبقة:
- * 1. التحقق من صلاحية كائن التاريخ (ليس Invalid Date أو NaN).
- * 2. التحقق من نطاق السنة: حصر السنة بين 1000 و 9999 كخيار تطبيقي ملائم للخدمة يضمن
- *    تمثيل السنة بأربعة أرقام موجبة تتطابق مع متطلبات التخزين وقيد قاعدة البيانات:
+ * Extracts UTC calendar year and month in YYYY-MM format:
+ * 1. Validates Date object is valid.
+ * 2. Enforces year between 1000 and 9999 matching database constraint:
  *    CHECK (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
- * 3. استخراج الشهر بتوقيت UTC (0-11) وإكماله إلى رقمين بصفر في البداية (01-12).
- * 4. استخدام الوقت الحالي افتراضياً عند عدم تمرير وسيط تاريخ.
+ * 3. Formats month padded to 2 digits (01-12).
+ * 4. Defaults to current Date when parameter is omitted.
  */
 export function getUtcYearMonth(date: Date = new Date()): string {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
@@ -148,13 +135,7 @@ export function getUtcYearMonth(date: Date = new Date()): string {
 }
 
 /**
- * سياق مدخلات تقييم القواعد الأربع للحصص
- * 
- * اشتراطات المدخلات:
- * - requestedUnits: عدد صحيح آمن موجب تماماً (> 0).
- * - الحدود والمستهلك: أعداد صحيحة آمنة غير سالبة (>= 0).
- * ملاحظة: هذه دالة نطاق داخلية تستقبل بيانات تم التحقق من صحتها مسبقاً،
- * وليست بديلاً عن دالة التحقق من المدخلات validateConsumptionInput.
+ * Evaluation context for the four quota rules
  */
 export interface QuotaEvaluationContext {
   requestedUnits: number;
@@ -167,26 +148,21 @@ export interface QuotaEvaluationContext {
 }
 
 /**
- * نتيجة تقييم القواعد: إما قبول الطلب أو رفضه مع تحديد السبب الصريح
+ * Quota rule evaluation result
  */
 export type QuotaEvaluationResult =
   | { accepted: true }
   | { accepted: false; reason: RejectionReason };
 
 /**
- * دالة تقييم قواعد الحصص الأربع لطلب الاستهلاك
- * 
- * القواعد المطبقة وترتيب الفحص الحتمي:
- * 1. حد الحساب لكل طلب: requestedUnits > accountPerRequestLimit
- * 2. حد المستخدم لكل طلب: requestedUnits > userPerRequestLimit
- * 3. حصة الحساب الشهرية: requestedUnits > accountMonthlyLimit - accountConsumedUnits
- * 4. حصة المستخدم الشهرية: requestedUnits > userMonthlyLimit - userConsumedUnits
- * 
- * استخدام المقارنة بالطرح (Limit - Consumed) يمنع فيضان الأعداد خارج النطاق الآمن،
- * ويتعامل تلقائياً وبدقة مع حالات تخفيض الخطة (حيث يكون الفرق سالباً ويُرفض أي طلب موجب).
+ * Evaluates the four quota rules deterministically:
+ * 1. Account per-request limit: requestedUnits > accountPerRequestLimit
+ * 2. User per-request limit: requestedUnits > userPerRequestLimit
+ * 3. Account monthly allowance: requestedUnits > accountMonthlyLimit - accountConsumedUnits
+ * 4. User monthly allowance: requestedUnits > userMonthlyLimit - userConsumedUnits
  */
 export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvaluationResult {
-  // 1. فحص حد الحساب لكل طلب
+  // 1. Account per-request check
   if (context.requestedUnits > context.accountPerRequestLimit) {
     return {
       accepted: false,
@@ -194,7 +170,7 @@ export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvalua
     };
   }
 
-  // 2. فحص حد المستخدم لكل طلب
+  // 2. User per-request check
   if (context.requestedUnits > context.userPerRequestLimit) {
     return {
       accepted: false,
@@ -202,7 +178,7 @@ export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvalua
     };
   }
 
-  // 3. فحص الحصة الشهرية للحساب بالمقارنة بالطرح
+  // 3. Account monthly allowance check using subtraction
   if (context.requestedUnits > context.accountMonthlyLimit - context.accountConsumedUnits) {
     return {
       accepted: false,
@@ -210,7 +186,7 @@ export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvalua
     };
   }
 
-  // 4. فحص الحصة الشهرية للمستخدم بالمقارنة بالطرح
+  // 4. User monthly allowance check using subtraction
   if (context.requestedUnits > context.userMonthlyLimit - context.userConsumedUnits) {
     return {
       accepted: false,
@@ -222,13 +198,9 @@ export function evaluateQuotaRules(context: QuotaEvaluationContext): QuotaEvalua
 }
 
 /**
- * حساب لقطة الاستخدام (المستهلك والمتبقي)
- * 
- * القواعد المطبقة:
- * - المدخلات: أعداد صحيحة آمنة غير سالبة (>= 0) تم التحقق منها مسبقاً.
- * - المتبقي: يُحسب ديناميكياً بالمعادلة Math.max(0, monthlyLimit - consumedUnits).
- * - لا يكون المتبقي سالباً أبداً؛ إذا كان المستهلك أكبر من الحد (بعد تخفيض الخطة)،
- *   فإن المتبقي هو 0، ويظل المستهلك يعكس الحقيقة التاريخية دون تصفير.
+ * Calculates usage snapshot (consumed and dynamic remaining):
+ * - Remaining is dynamically calculated: Math.max(0, monthlyLimit - consumedUnits)
+ * - Remaining is never negative; if consumed exceeds limit (e.g. after downgrade), remaining is 0
  */
 export function calculateUsageSnapshot(
   monthlyLimit: number,
@@ -241,13 +213,7 @@ export function calculateUsageSnapshot(
 }
 
 /**
- * قراءة الاستهلاك الشهري للحساب للشهر المحدد
- * 
- * ملاحظات معمارية:
- * 1. عمود total_units من نوع BIGINT ويُرجع كنص عبر pg؛ يتم تحويله إلى number
- *    بأمان بناءً على قيد النطاق الآمن في الجدول (total_units <= 9007199254740991).
- * 2. إرجاع 0 يعني غياب صف العداد فقط (شهر جديد لم يُسجل فيه استهلاك).
- * 3. في حال حدوث أي خطأ في قاعدة البيانات، ينتقل الخطأ للمستدعي ولا يُحوّل إلى صفر.
+ * Reads account monthly usage for specified month
  */
 export async function getAccountMonthlyUsage(
   db: DbExecutor,
@@ -269,14 +235,7 @@ export async function getAccountMonthlyUsage(
 }
 
 /**
- * قراءة الاستهلاك الشهري للمستخدم للشهر المحدد مع فرض عزل الحسابات
- * 
- * ملاحظات معمارية:
- * 1. الاستعلام مقيّد بـ account_id و user_id و year_month لضمان عزل المستأجرين.
- * 2. إرجاع 0 لا يثبت وجود المستخدم أو ملكيته، لأن غياب العداد أو عدم تطابق
- *    الحساب كلاهما يُعيد صفوفاً فارغة؛ يجب على المسارات التحقق من وجود المستخدم
- *    وملكيته أولاً قبل الاعتماد على نتيجة العداد.
- * 3. في حال حدوث خطأ في قاعدة البيانات، ينتقل الخطأ للمستدعي ولا يُحوّل إلى صفر.
+ * Reads user monthly usage for specified month under tenant isolation
  */
 export async function getUserMonthlyUsage(
   db: DbExecutor,
@@ -299,19 +258,17 @@ export async function getUserMonthlyUsage(
 }
 
 /**
- * خيارات تنفيذ طلب الاستهلاك
+ * Execution options for consumption requests
  */
 export interface ExecuteConsumptionOptions {
   /**
-   * دالة اختيارية لحقن توقيت المعالجة بدلاً من ساعة النظام (مفيدة للاختبارات وتثبيت الوقت)
-   * يتم استدعاؤها حصراً بعد الحصول على قفل الحساب
+   * Optional clock injection for deterministic testing; invoked after acquiring account lock
    */
   clock?: () => Date;
 }
 
 /**
- * سياق التدقيق وحفظ القرارات التاريخية في قاعدة البيانات
- * يُحفظ في عمود decision_context لضمان بقاء تفسير القرار مستقلاً عن أي تعديل لاحق للخطط
+ * Historical decision context persisted in decision_context column
  */
 export interface DecisionContext {
   accountPlan: {
@@ -331,13 +288,8 @@ export interface DecisionContext {
 }
 
 /**
- * دالة تنفيذ المعاملة الداخلية (Private): تنفّذ خطوات القراءة والتقييم والكتابات الثلاث
- * تحت مظلة الاتصال والقفل المفتوح، دون بدء معاملة أو إنهائها أو تحرير الاتصال.
- *
- * @param client اتصال قاعدة البيانات المحجوز بالمعاملة والقفل
- * @param accountId معرّف الحساب الموثق
- * @param request طلب استهلاك مدقق ومطابق للنوع ConsumptionRequest، تم التحقق منه مسبقاً بواسطة validateConsumptionInput
- * @param options خيارات التنفيذ (مثل حقن الساعة للاختبارات)
+ * Internal transaction processor: executes read, evaluation, and write operations
+ * under the active client connection and acquired account lock.
  */
 async function processConsumption(
   client: pg.PoolClient,
@@ -345,7 +297,7 @@ async function processConsumption(
   request: ConsumptionRequest,
   options?: ExecuteConsumptionOptions
 ): Promise<ConsumptionDecision> {
-  // 1. فحص عدم التكرار (Idempotency Check) فور نيل القفل وقبل أي عملية أخرى
+  // 1. Idempotency check immediately after acquiring lock
   const existingRecordRes = await client.query<{
     user_id: string;
     requested_units: string;
@@ -360,7 +312,7 @@ async function processConsumption(
   if (existingRecordRes.rows.length > 0) {
     const existing = existingRecordRes.rows[0];
 
-    // أ) فحص التعارض: نفس معرّف الطلب ولكن ببيانات مختلفة (مستخدم مختلف أو وحدات مختلفة)
+    // a) Conflict check: identical requestId with mismatched payload
     if (
       existing.user_id !== request.userId ||
       Number(existing.requested_units) !== request.units
@@ -370,23 +322,22 @@ async function processConsumption(
       );
     }
 
-    // ب) إعادة متطابقة (Idempotent Replay): إرجاع الرد التاريخي الأصلي فوراً
-    // تنتهي المعاملة بـ COMMIT سليم دون المساس بالعدادات أو إعادة تقييم القواعد
+    // b) Idempotent replay: return original stored decision snapshot immediately
     return existing.response_body;
   }
 
-  // 2. استدعاء الساعة مرة واحدة فقط بعد حيازة القفل لتحديد لحظة المعالجة وشهر المحاسبة
+  // 2. Invoke clock once post-lock to establish processing timestamp and accounting month
   const clock = options?.clock ?? (() => new Date());
   const processedAt = clock();
   const yearMonth = getUtcYearMonth(processedAt);
 
-  // 3. التحقق من وجود المستخدم وتبعيته للحساب الموثق
+  // 3. Verify user exists and belongs to authenticated account
   const user = await getUserById(client, request.userId, accountId);
   if (!user) {
     throw new UserNotFoundError('User not found');
   }
 
-  // 3. قراءة إسناد خطة الحساب الحالية من قاعدة البيانات مباشرة تحت القفل
+  // 4. Read current account plan assignment from database under lock
   const accountRes = await client.query<{ plan_id: string }>(
     'SELECT plan_id FROM accounts WHERE id = $1',
     [accountId]
@@ -396,7 +347,7 @@ async function processConsumption(
   }
   const accountPlanId = accountRes.rows[0].plan_id;
 
-  // 4. جلب خطة الحساب والتحقق من إتاحتها وصحة نوعها
+  // 5. Retrieve account plan and verify accessibility and ACCOUNT type
   const accountPlan = await getAccessiblePlan(client, accountPlanId, accountId);
   if (!accountPlan) {
     throw new Error(`Account plan '${accountPlanId}' not found or not accessible`);
@@ -405,7 +356,7 @@ async function processConsumption(
     throw new Error(`Account plan '${accountPlan.id}' must be of type 'ACCOUNT'`);
   }
 
-  // 5. جلب خطة المستخدم والتحقق من إتاحتها وصحة نوعها
+  // 6. Retrieve user plan and verify accessibility and USER type
   const userPlan = await getAccessiblePlan(client, user.planId, accountId);
   if (!userPlan) {
     throw new Error(`User plan '${user.planId}' not found or not accessible`);
@@ -414,11 +365,11 @@ async function processConsumption(
     throw new Error(`User plan '${userPlan.id}' must be of type 'USER'`);
   }
 
-  // 6. قراءة الاستهلاك الشهري التراكمي القائم للحساب والمستخدم للشهر المحدد
+  // 7. Read cumulative monthly usage for account and user
   const accountConsumedUnits = await getAccountMonthlyUsage(client, accountId, yearMonth);
   const userConsumedUnits = await getUserMonthlyUsage(client, accountId, request.userId, yearMonth);
 
-  // 7. تقييم قواعد الحصص الأربع
+  // 8. Evaluate quota rules
   const evaluationResult = evaluateQuotaRules({
     requestedUnits: request.units,
     accountMonthlyLimit: accountPlan.monthlyLimit,
@@ -429,7 +380,7 @@ async function processConsumption(
     userConsumedUnits,
   });
 
-  // 8. تجهيز سياق القرار التاريخي الكامل لحفظه صراحة في قاعدة البيانات
+  // 9. Prepare historical decision context
   const decisionContext: DecisionContext = {
     accountPlan: {
       id: accountPlan.id,
@@ -447,9 +398,9 @@ async function processConsumption(
     },
   };
 
-  // 9. تفريع المسار بناءً على نتيجة التقييم:
+  // 10. Branch on evaluation outcome:
   if (evaluationResult.accepted) {
-    // --- مسار القبول (ACCEPTED) ---
+    // --- ACCEPTED branch ---
     const newAccountConsumed = accountConsumedUnits + request.units;
     const newUserConsumed = userConsumedUnits + request.units;
 
@@ -463,7 +414,7 @@ async function processConsumption(
       user: userSnapshot,
     };
 
-    // أ) تحديث عداد الحساب الشهري ذرّياً عبر UPSERT
+    // a) Atomically update account monthly counter via UPSERT
     await client.query(
       `INSERT INTO account_monthly_usage (account_id, year_month, total_units, updated_at)
        VALUES ($1, $2, $3, NOW())
@@ -473,7 +424,7 @@ async function processConsumption(
       [accountId, yearMonth, request.units]
     );
 
-    // ب) تحديث عداد المستخدم الشهري ذرّياً عبر UPSERT
+    // b) Atomically update user monthly counter via UPSERT
     await client.query(
       `INSERT INTO user_monthly_usage (account_id, user_id, year_month, total_units, updated_at)
        VALUES ($1, $2, $3, $4, NOW())
@@ -483,7 +434,7 @@ async function processConsumption(
       [accountId, request.userId, yearMonth, request.units]
     );
 
-    // ج) حفظ سجل الاستهلاك المقبول مع السياق التاريخي
+    // c) Persist accepted consumption record with historical decision context
     await client.query(
       `INSERT INTO consumption_records (
          account_id, user_id, request_id, requested_units,
@@ -503,8 +454,7 @@ async function processConsumption(
 
     return decision;
   } else {
-    // --- مسار الرفض بسبب القواعد (REJECTED) ---
-    // الرفض نتيجة تجارية طبيعية: العدادات لا تزيد، لكن القرار وسياقه يُحفظان بنجاح
+    // --- REJECTED branch ---
     const accountSnapshot = calculateUsageSnapshot(accountPlan.monthlyLimit, accountConsumedUnits);
     const userSnapshot = calculateUsageSnapshot(userPlan.monthlyLimit, userConsumedUnits);
 
@@ -516,7 +466,7 @@ async function processConsumption(
       user: userSnapshot,
     };
 
-    // حفظ سجل الاستهلاك المرفوض مع سبب الرفض والسياق التاريخي
+    // Persist rejected consumption record with rejection reason and decision context
     await client.query(
       `INSERT INTO consumption_records (
          account_id, user_id, request_id, requested_units,
@@ -541,12 +491,8 @@ async function processConsumption(
 }
 
 /**
- * دالة الاستهلاك العامة: مسؤولة عن حجز المعاملة وقفل الحساب وإدارتهما
- * 
- * @param pool مجمع اتصالات قاعدة البيانات
- * @param accountId معرّف الحساب الموثق
- * @param request طلب استهلاك مدقق مسبقاً بواسطة validateConsumptionInput
- * @param options خيارات التنفيذ (مثل حقن الساعة للاختبارات)
+ * Public consumption execution entrypoint:
+ * Manages atomic transaction and pessimistic account locking via withAccountLock.
  */
 export async function executeConsumption(
   pool: pg.Pool,
@@ -558,4 +504,3 @@ export async function executeConsumption(
     return processConsumption(client, accountId, request, options);
   });
 }
-

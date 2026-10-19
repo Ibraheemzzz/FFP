@@ -4,7 +4,7 @@ import type pg from 'pg';
 import { type DbExecutor, withAccountLock } from './db.js';
 
 /**
- * نطاق تطبيق الخطة: إما على مستوى الحساب أو على مستوى المستخدم
+ * Plan applicability scope: either account level or user level
  */
 export type PlanType = 'ACCOUNT' | 'USER';
 
@@ -14,8 +14,8 @@ export interface Plan {
   type: PlanType;
   monthlyLimit: number;
   /**
-   * حد الاستهلاك للطلب الفردي الواحد (units per single request):
-   * يُفحص لكل عملية استهلاك منفردة، وليس سقفاً لمجموع الطلبات المتزامنة أو قياساً لطاقة الخادم.
+   * Consumption cap per discrete request (units per single request):
+   * Evaluated per individual consumption transaction; not a concurrency limit or network throughput metric.
    */
   perRequestLimit: number;
   ownerAccountId: string | null;
@@ -38,11 +38,6 @@ export interface PlanDefinitionInput {
   name: string;
   type: PlanType;
   monthlyLimit: number;
-  /**
-   * حد الاستهلاك للطلب الفردي الواحد (units per single request):
-   * يُفحص لكل عملية استهلاك منفصلة. بعض السياسات والأرقام الافتراضية هي اختيارات تصميمية
-   * معتمدة للمنتج ([مرن — برّر]) وليست متطلبات حرفية مفروضة في الدليل.
-   */
   perRequestLimit: number;
 }
 
@@ -53,7 +48,7 @@ export interface PlanUpdateInput {
 }
 
 /**
- * فئة الخطأ المخصصة لعدم وجود المورد أو عدم إتاحته للمستأجر الحالي
+ * Thrown when a plan resource does not exist or is inaccessible to current tenant
  */
 export class NotFoundError extends Error {
   constructor(message: string) {
@@ -63,7 +58,7 @@ export class NotFoundError extends Error {
 }
 
 /**
- * فئة الخطأ المخصصة لمحاولة تعديل الموارد المحمية أو الممنوعة كلياً (مثل الخطط العامة)
+ * Thrown when attempting to mutate protected resources (such as default public plans)
  */
 export class ForbiddenError extends Error {
   constructor(message: string) {
@@ -73,7 +68,7 @@ export class ForbiddenError extends Error {
 }
 
 /**
- * فئة الخطأ المخصصة للتحقق من صحة مدخلات وتعريفات الخطط
+ * Thrown on plan validation errors
  */
 export class PlanValidationError extends Error {
   constructor(message: string) {
@@ -90,13 +85,13 @@ const ALLOWED_PLAN_DEFINITION_FIELDS = new Set([
 ]);
 
 /**
- * التحقق من صحة تعريف الخطة (Plan Definition Validation):
- * - يتطلب جسماً صالحاً ككائن JSON غير فارغ
- * - يرفض الحقول غير المعروفة أو المكتوبة بحالة أحرف مختلفة دون تحويل تلقائي
- * - يتطلب الحقول الأربعة: name و type و monthlyLimit و perRequestLimit
- * - name: نص غير فارغ بعد trim وبحد أقصى 100 محرف
- * - type: إما 'ACCOUNT' أو 'USER' حصراً
- * - monthlyLimit و perRequestLimit: أعداد صحيحة آمنة غير سالبة (يسمح بالصفر وبأن يتجاوز أحدهما الآخر)
+ * Plan Definition Validation:
+ * - Requires valid non-empty JSON object
+ * - Rejects unknown or case-mismatched fields
+ * - Requires: name, type, monthlyLimit, perRequestLimit
+ * - name: non-empty string after trim, max 100 characters
+ * - type: strictly 'ACCOUNT' or 'USER'
+ * - monthlyLimit and perRequestLimit: non-negative safe integers (0 allowed)
  */
 export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -112,7 +107,7 @@ export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
     }
   }
 
-  // 1. التحقق من حقل name
+  // 1. Validate name
   if (!('name' in record) || record.name === undefined) {
     throw new PlanValidationError('name is required');
   }
@@ -127,7 +122,7 @@ export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
     throw new PlanValidationError('name must not exceed 100 characters');
   }
 
-  // 2. التحقق من حقل type
+  // 2. Validate type
   if (!('type' in record) || record.type === undefined) {
     throw new PlanValidationError('type is required');
   }
@@ -139,7 +134,7 @@ export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
   }
   const planType: PlanType = record.type;
 
-  // 3. التحقق من حقل monthlyLimit
+  // 3. Validate monthlyLimit
   if (!('monthlyLimit' in record) || record.monthlyLimit === undefined) {
     throw new PlanValidationError('monthlyLimit is required');
   }
@@ -153,7 +148,7 @@ export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
     throw new PlanValidationError('monthlyLimit must not be negative');
   }
 
-  // 4. التحقق من حقل perRequestLimit
+  // 4. Validate perRequestLimit
   if (!('perRequestLimit' in record) || record.perRequestLimit === undefined) {
     throw new PlanValidationError('perRequestLimit is required');
   }
@@ -176,8 +171,7 @@ export function validatePlanDefinition(body: unknown): PlanDefinitionInput {
 }
 
 /**
- * التحقق من وجود نتيجة الاستعلام فقط؛
- * منع الوصول لموارد الحسابات الأخرى يتحقق داخل جملة الاستعلام نفسها في قاعدة البيانات
+ * Asserts resource is non-null or throws NotFoundError
  */
 export function assertResourceFound<T>(resource: T | null, message: string): T {
   if (resource === null) {
@@ -187,8 +181,7 @@ export function assertResourceFound<T>(resource: T | null, message: string): T {
 }
 
 /**
- * استعلام خطة متاحة للحساب: خطة عامة أو خطة خاصة مملوكة لنفس الحساب
- * المنع يتم في الاستعلام لضمان عدم تسريب أي صف يخص حساباً آخر
+ * Retrieves a plan accessible to the account: public plan or owned by the same account
  */
 export async function getAccessiblePlan(
   db: DbExecutor,
@@ -220,9 +213,9 @@ export async function getAccessiblePlan(
 }
 
 /**
- * التحقق الصارم من معامل التصفية بحسب النوع (Query Parameter: ?type=):
- * - اختياري: يعيد undefined إذا لم يُرسل
- * - يرفض القيم الفارغة، أو المصفوفات، أو القيم غير النصية، أو القيم غير المطابقة لـ ACCOUNT أو USER
+ * Validates plan type query parameter (?type=):
+ * - Optional: returns undefined if omitted
+ * - Rejects non-string, empty, or values other than 'ACCOUNT' or 'USER'
  */
 export function validatePlanTypeFilter(typeParam: unknown): PlanType | undefined {
   if (typeParam === undefined) {
@@ -235,7 +228,6 @@ export function validatePlanTypeFilter(typeParam: unknown): PlanType | undefined
     );
   }
 
-  // رفض القيم الفارغة بعد trim، والتحقق الصارم بحساسية لحالة الأحرف
   if (typeParam !== 'ACCOUNT' && typeParam !== 'USER') {
     throw new PlanValidationError(
       "Invalid plan type filter. Allowed values: 'ACCOUNT', 'USER'"
@@ -246,11 +238,10 @@ export function validatePlanTypeFilter(typeParam: unknown): PlanType | undefined
 }
 
 /**
- * استعلام قائمة الخطط المتاحة للحساب مع تطبيق عزل الحسابات والترتيب الثابت:
- * - يعيد الخطط العامة (owner_account_id IS NULL) + الخطط الخاصة بالحساب الموثق
- * - يدعم التصفية الاختيارية بنوع الخطة typeFilter
- * - الترتيب دائماً تصاعدياً بـ created_at ثم id
- * - يعيد مصفوفة فارغة [] عند عدم وجود خطط مطابقة دون إلقاء خطأ
+ * Lists plans accessible to account with multi-tenant isolation and deterministic sort:
+ * - Returns public plans (owner_account_id IS NULL) + private plans owned by account
+ * - Supports optional filtering by plan type
+ * - Deterministic sort ascending by created_at then id
  */
 export async function listAccessiblePlans(
   pool: pg.Pool,
@@ -279,22 +270,19 @@ export async function listAccessiblePlans(
 }
 
 /**
- * توليد معرّف عشوائي مشفر للخطة بصيغة plan_<24 hex chars>.
- * يولد معرّفاً بطول 29 حرفاً يقع بأمان تحت حد VARCHAR(64).
- * الفضاء العشوائي (2^96 من المعرفات الممكنة) يقلل احتمال التصادم جداً،
- * بينما قيد المفتاح الأساسي في PostgreSQL هو الضامن لمنع حفظ أي تكرار.
+ * Generates random cryptographic plan ID in format plan_<24 hex chars> (29 chars total)
  */
 export function generatePlanId(): string {
   return `plan_${crypto.randomBytes(12).toString('hex')}`;
 }
 
 /**
- * التحقق الصارم من مدخلات التحديث الجزئي للخطة (PATCH /plans/:planId):
- * - يجب أن يكون كائناً غير فارغ يحتوي على حقل واحد على الأقل.
- * - يرفض صراحة محاولة تعديل نوع الخطة 'type'.
- * - يرفض أي حقول مجهولة أو زائدة عبر Object.keys.
- * - يرفض صراحة القيمة null لأي حقل مرسل.
- * - يقبل 0 في monthlyLimit و perRequestLimit كأعداد صحيحة آمنة غير سالبة.
+ * Validates partial plan update payload (PATCH /plans/:planId):
+ * - Requires non-empty JSON object with at least one field
+ * - Rejects modifying 'type'
+ * - Rejects unknown fields
+ * - Rejects null values
+ * - Accepts 0 for monthlyLimit and perRequestLimit
  */
 export function validatePlanUpdateInput(input: unknown): PlanUpdateInput {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
@@ -308,12 +296,10 @@ export function validatePlanUpdateInput(input: unknown): PlanUpdateInput {
     throw new PlanValidationError('At least one field must be provided for update');
   }
 
-  // رفض محاولة تعديل نوع الخطة صراحة
   if ('type' in record) {
     throw new PlanValidationError('Plan type cannot be changed');
   }
 
-  // فحص صارم للحقول المجهولة
   for (const key of keys) {
     if (key !== 'name' && key !== 'monthlyLimit' && key !== 'perRequestLimit') {
       throw new PlanValidationError(`Unknown field: ${key}`);
@@ -375,10 +361,9 @@ export function validatePlanUpdateInput(input: unknown): PlanUpdateInput {
 }
 
 /**
- * إنشاء خطة خاصة بحساب موثق:
- * - ربط الخطة بحساب المالك الحصري (owner_account_id = accountId)
- * - توليد معرّف فريد بصيغة plan_...
- * - قيد المفتاح الأساسي في PostgreSQL يمنع تكرار المعرف
+ * Creates custom plan owned by authenticated account:
+ * - Scoped to owner account (owner_account_id = accountId)
+ * - Generates unique ID in plan_... format
  */
 export async function createCustomPlan(
   pool: pg.Pool,
@@ -414,13 +399,13 @@ export async function createCustomPlan(
 }
 
 /**
- * تعديل خطة خاصة بحساب موثق (PATCH):
- * 1. التحقق من وجود الخطة وإتاحتها للمستأجر عبر getAccessiblePlan
- * 2. رفض تعديل الخطط العامة بـ ForbiddenError (403)
- * 3. تنفيذ التحديث الذري في قاعدة البيانات مع اشتراط الملكية المباشر:
+ * Updates a custom plan owned by authenticated account (PATCH):
+ * 1. Checks plan existence and accessibility via getAccessiblePlan
+ * 2. Rejects modifying public default plans with ForbiddenError (403)
+ * 3. Executes atomic UPDATE with explicit ownership condition:
  *    WHERE id = $4 AND owner_account_id = $5
- *    واستخدام COALESCE للحفاظ على الحقول غير المرسلة دون قراءة مسبقة
- * 4. فحص عدد الصفوف المتأثرة؛ إذا كان صفراً يُلقى NotFoundError (404) دون افتراض وجود صف
+ *    Uses COALESCE to preserve omitted fields without pre-reading
+ * 4. Checks affected row count; throws NotFoundError (404) if zero rows affected
  */
 export async function updateCustomPlan(
   pool: pg.Pool,
@@ -429,18 +414,15 @@ export async function updateCustomPlan(
   input: PlanUpdateInput
 ): Promise<Plan> {
   return withAccountLock(pool, accountId, async (client) => {
-    // فحص مبدئي للوجود والصلاحية مع عزل الحسابات على اتصال المعاملة بعد نيل القفل
     const existingPlan = await getAccessiblePlan(client, planId, accountId);
     if (!existingPlan) {
       throw new NotFoundError('Plan not found');
     }
 
-    // حماية الخطط العامة من التعديل
     if (existingPlan.ownerAccountId === null) {
       throw new ForbiddenError('Default public plans cannot be modified');
     }
 
-    // التحديث الذري مع العزل التام في SQL والمحافظة على الحقول غير المرسلة
     const result = await client.query<PlanRow>(
       `UPDATE plans
        SET name = COALESCE($1::varchar, name),
@@ -458,7 +440,6 @@ export async function updateCustomPlan(
       ]
     );
 
-    // إذا لم يعد الاستعلام أي صف، يُرمى خطأ عدم الوجود دون افتراض وجود rows[0]
     if (result.rows.length === 0) {
       throw new NotFoundError('Plan not found');
     }
@@ -476,4 +457,3 @@ export async function updateCustomPlan(
     };
   });
 }
-

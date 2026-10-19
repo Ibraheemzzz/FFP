@@ -28,12 +28,12 @@ function getDatabaseUrl(
 }
 
 /**
- * دالة مساعدة لاختبار انتظار القفل الحصري لكل عملية على حدة في بيئة معزولة:
- * - تنشئ مجموعة اتصالات منفصلة (waiterPool) خاصة بالعملية المنتظرة تحمل علامة مميزة في application_name
- * - تحجز قفل الحساب في اتصال مستقل تماماً (holderClient)
- * - تستخدم مجموعة الاتصالات الأساسية (testPool) لمراقبة ورصد علاقة الحجب في pg_stat_activity عبر pg_blocking_pids
- * - تضبط مهلة رصد أقصر بوضوح من statement_timeout
- * - تفك القفل وتتابع اكتمال العملية بنجاح مع تنظيف مضمون للاتصالات
+ * Helper to test exclusive lock contention for each operation in an isolated environment:
+ * - Creates a distinct connection pool (waiterPool) tagged with application_name
+ * - Holds the account lock in an independent connection (holderClient)
+ * - Observes blocking relationships in pg_stat_activity via pg_blocking_pids using testPool
+ * - Uses an observation timeout shorter than statement_timeout
+ * - Unlocks and verifies operation completion with guaranteed cleanup
  */
 async function assertLockContentionForOperation(
   testPool: pg.Pool,
@@ -56,28 +56,27 @@ async function assertLockContentionForOperation(
     queryTimeoutMillis: 7000,
   });
 
-  // 1. تعريف مرجع opPromise بالخارج ليكون متاحاً في finally دائماً
+  // 1. Define opPromise externally so it is always accessible in finally
   let opPromise: Promise<void> | undefined;
   let operationCompleted = false;
 
   try {
-    // 2. حجز القفل الحصري على صف الحساب في الاتصال الحاجز المستقل
+    // 2. Acquire exclusive lock on account row in independent holder connection
     const holderPidResult = await holderClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
     const holderPid = holderPidResult.rows[0].pid;
 
     await holderClient.query('BEGIN ISOLATION LEVEL READ COMMITTED');
     await holderClient.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
 
-    // 3. إطلاق العملية المنتظرة مع معالجة الرفض مبكراً لتفادي unhandledRejection
+    // 3. Launch waiter operation handling rejection early to prevent unhandledRejection
     opPromise = runOperation(waiterPool).then(() => {
       operationCompleted = true;
     });
 
-    // معالجة الرفض مبكراً، مع إبقاء opPromise الأصلية
-    // مرفوضة لكي يلتقط await خطأها لاحقاً.
+    // Handle rejection early while keeping opPromise rejected for await later
     void opPromise.catch(() => {});
 
-    // 4. رصد الحجب في pg_stat_activity بمهلة قابلة للضبط أقصر بوضوح من statement_timeout (5000ms)
+    // 4. Observe blocking in pg_stat_activity with timeout shorter than statement_timeout (5000ms)
     const OBSERVATION_TIMEOUT_MS = 1000;
     const pollIntervalMs = 25;
     const startTime = Date.now();
@@ -111,11 +110,11 @@ async function assertLockContentionForOperation(
       `Operation '${operationName}' should not complete while holder maintains exclusive lock`
     );
 
-    // 5. فك القفل عبر ROLLBACK لإنهاء حجز الاختبار في المسار الطبيعي
+    // 5. Release lock via ROLLBACK to end test contention in normal flow
     await holderClient.query('ROLLBACK');
     holderCleanedUp = true;
 
-    // 6. انتظار اكتمال العملية المنتظرة بعد تحرير القفل
+    // 6. Wait for waiter operation completion after lock is released
     await opPromise;
     assert.equal(
       operationCompleted,
@@ -125,8 +124,8 @@ async function assertLockContentionForOperation(
   } catch (err) {
     testError = err;
   } finally {
-    // الترتيب الصحيح للتنظيف:
-    // أ. إنهاء معاملة الحاجز وفك القفل أولاً حتى لا تظل العملية المنتظرة عالقة
+    // Sequential cleanup:
+    // a. Roll back holder transaction and release lock first so waiter is not stuck
     if (!holderCleanedUp) {
       try {
         await holderClient.query('ROLLBACK');
@@ -138,7 +137,7 @@ async function assertLockContentionForOperation(
       }
     }
 
-    // ب. تحرير اتصال الحاجز (سليماً إذا نجح التراجع، أو التخلص منه إذا فشل)
+    // b. Release holder client (safely discard if rollback failed)
     try {
       holderClient.release(!holderCleanedUp);
     } catch (err) {
@@ -147,7 +146,7 @@ async function assertLockContentionForOperation(
       }
     }
 
-    // ج. انتظار استقرار نتيجة العملية المنتظرة بعد تحرير القفل (مع الحفاظ على الخطأ الأصلي)
+    // c. Wait for waiter operation to settle after release (preserving original error)
     if (opPromise) {
       try {
         await opPromise;
@@ -158,7 +157,7 @@ async function assertLockContentionForOperation(
       }
     }
 
-    // د. إغلاق waiterPool بعد أن تكون عمليتها قد استقرت
+    // d. Close waiterPool after operation has settled
     try {
       await waiterPool.end();
     } catch (err) {
@@ -167,7 +166,7 @@ async function assertLockContentionForOperation(
       }
     }
 
-    // هـ. إظهار الخطأ الأصلي وأخطاء التنظيف (وإفشال الاختبار إذا فشل التنظيف دون وجود خطأ سابق)
+    // e. Propagate original error and cleanup errors
     if (cleanupError) {
       console.error(`Cleanup failed for operation '${operationName}':`, cleanupError);
       if (!testError) {
@@ -195,7 +194,7 @@ async function runPlanChangesTests(): Promise<void> {
   let testExecutionError: unknown = null;
 
   try {
-    // 1. إنشاء قاعدة بيانات اختبار معزولة وتطبيق المهاجرات
+    // 1. Setup isolated test database and apply migrations
     await adminPool.query(`CREATE DATABASE ${TEST_DB_NAME}`);
     isDatabaseCreated = true;
 
@@ -213,7 +212,7 @@ async function runPlanChangesTests(): Promise<void> {
     });
     app = testApp;
 
-    // 2. تسجيل حسابين مستقلين: Account A و Account B
+    // 2. Register two independent accounts: Account A and Account B
     const createAccARes = await app.inject({
       method: 'POST',
       url: '/accounts',
@@ -231,10 +230,10 @@ async function runPlanChangesTests(): Promise<void> {
     const accountB = JSON.parse(createAccBRes.body) as { id: string; apiKey: string };
 
     // =========================================================================
-    // الاختبار 1: الأثر الفوري بعد تعديل الخطة عبر PATCH /plans/:planId
+    // Test 1: Immediate effect after modifying plan via PATCH /plans/:planId
     // =========================================================================
     {
-      // إنشاء خطة خاصة بالحساب A
+      // Create private plan for Account A
       const createPlanRes = await app.inject({
         method: 'POST',
         url: '/plans',
@@ -249,7 +248,7 @@ async function runPlanChangesTests(): Promise<void> {
       assert.equal(createPlanRes.statusCode, 201);
       const planA = JSON.parse(createPlanRes.body) as Plan;
 
-      // تعديل حدود الخطة
+      // Modify plan limits
       const updatePlanRes = await app.inject({
         method: 'PATCH',
         url: `/plans/${planA.id}`,
@@ -264,7 +263,7 @@ async function runPlanChangesTests(): Promise<void> {
       assert.equal(updatedPlan.monthlyLimit, 2500);
       assert.equal(updatedPlan.perRequestLimit, 250);
 
-      // التحقق من أن القراءة الفورية التالية ترى الحدود الجديدة مباشرة
+      // Verify that immediate subsequent read sees new limits directly
       const getPlanRes = await app.inject({
         method: 'GET',
         url: `/plans/${planA.id}`,
@@ -279,10 +278,10 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 2: تعديل خطة مشتركة ينعكس فوراً على جميع المستخدمين المسندين لها
+    // Test 2: Modifying shared plan reflects immediately on all assigned users
     // =========================================================================
     {
-      // إنشاء خطة مستخدمين خاصة مشتركة
+      // Create shared private user plan
       const createSharedPlanRes = await app.inject({
         method: 'POST',
         url: '/plans',
@@ -297,7 +296,7 @@ async function runPlanChangesTests(): Promise<void> {
       assert.equal(createSharedPlanRes.statusCode, 201);
       const sharedPlan = JSON.parse(createSharedPlanRes.body) as Plan;
 
-      // إنشاء مستخدمين وإسناد الخطة المشتركة لهما
+      // Create users and assign shared plan
       const user1Res = await app.inject({
         method: 'POST',
         url: '/users',
@@ -316,7 +315,7 @@ async function runPlanChangesTests(): Promise<void> {
       assert.equal(user2Res.statusCode, 201);
       const user2 = JSON.parse(user2Res.body) as User;
 
-      // تعديل الخطة المشتركة برفع الحدود
+      // Modify shared plan by increasing limits
       const updateSharedPlanRes = await app.inject({
         method: 'PATCH',
         url: `/plans/${sharedPlan.id}`,
@@ -328,7 +327,7 @@ async function runPlanChangesTests(): Promise<void> {
       });
       assert.equal(updateSharedPlanRes.statusCode, 200);
 
-      // التأكد عبر GET /users/:userId من بقاء الإسناد لنفس الخطة
+      // Verify via GET /users/:userId that plan assignment is retained
       const getUser1Res = await app.inject({
         method: 'GET',
         url: `/users/${user1.id}`,
@@ -345,7 +344,7 @@ async function runPlanChangesTests(): Promise<void> {
       assert.equal(getUser2Res.statusCode, 200);
       assert.equal((JSON.parse(getUser2Res.body) as User).planId, sharedPlan.id);
 
-      // التأكد عبر استعلام ربط اختباري مباشر (SQL JOIN) باستخدام أسماء الأعمدة المعتمدة
+      // Verify via direct SQL JOIN test query using schema column names
       const joinResult = await testPool.query<{
         id: string;
         plan_id: string;
@@ -370,10 +369,10 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 3: خفض الخطة دون الاستهلاك الحالي لا يصفّر ولا يُعدّل total_units
+    // Test 3: Plan downgrade below current consumption does not reset or alter total_units
     // =========================================================================
     {
-      // إنشاء خطة حساب مع استهلاك مسبق
+      // Create account plan with prior consumption
       const createAccPlanRes = await app.inject({
         method: 'POST',
         url: '/plans',
@@ -395,7 +394,7 @@ async function runPlanChangesTests(): Promise<void> {
         payload: { planId: accPlan.id },
       });
 
-      // زرع استهلاك شهري غير صفري للحساب وللمستخدم
+      // Seed non-zero monthly usage for account and user
       const currentMonth = '2026-10';
       await testPool.query(
         `INSERT INTO account_monthly_usage (account_id, year_month, total_units)
@@ -404,7 +403,7 @@ async function runPlanChangesTests(): Promise<void> {
         [accountA.id, currentMonth, 850]
       );
 
-      // زرع استهلاك لمستخدم
+      // Seed usage for user
       const testUserRes = await app.inject({
         method: 'POST',
         url: '/users',
@@ -421,7 +420,7 @@ async function runPlanChangesTests(): Promise<void> {
         [accountA.id, testUser.id, currentMonth, 450]
       );
 
-      // خفض حدود خطة الحساب إلى 300 (أقل من 850 المستهلكة)
+      // Downgrade account plan limits to 300 (below 850 consumed)
       const downgradeAccPlanRes = await app.inject({
         method: 'PATCH',
         url: `/plans/${accPlan.id}`,
@@ -430,14 +429,14 @@ async function runPlanChangesTests(): Promise<void> {
       });
       assert.equal(downgradeAccPlanRes.statusCode, 200);
 
-      // التحقق من بقاء الاستهلاك التراكمي للحساب دون تغيير
+      // Verify account cumulative consumption remains unchanged
       const accUsageCheck = await testPool.query<{ total_units: string }>(
         `SELECT total_units FROM account_monthly_usage WHERE account_id = $1 AND year_month = $2`,
         [accountA.id, currentMonth]
       );
       assert.equal(Number(accUsageCheck.rows[0].total_units), 850);
 
-      // التحقق من بقاء الاستهلاك التراكمي للمستخدم دون تغيير
+      // Verify user cumulative consumption remains unchanged
       const userUsageCheck = await testPool.query<{ total_units: string }>(
         `SELECT total_units FROM user_monthly_usage WHERE user_id = $1 AND year_month = $2`,
         [testUser.id, currentMonth]
@@ -448,10 +447,10 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 4: إثبات دقيق لانتظار العمليات الثلاث للقفل وفك الحجز بعد ROLLBACK
+    // Test 4: Rigorous proof of three operations waiting for lock and unblocking after ROLLBACK
     // =========================================================================
     {
-      // 4.1 إثبات انتظار updateCustomPlan عبر waiterPool مستقل
+      // 4.1 Prove updateCustomPlan contention via independent waiterPool
       const customPlanRes = await app.inject({
         method: 'POST',
         url: '/plans',
@@ -478,7 +477,7 @@ async function runPlanChangesTests(): Promise<void> {
         }
       );
 
-      // 4.2 إثبات انتظار updateAccountPlan عبر waiterPool مستقل
+      // 4.2 Prove updateAccountPlan contention via independent waiterPool
       await assertLockContentionForOperation(
         testPool,
         testDbBaseUrl,
@@ -489,7 +488,7 @@ async function runPlanChangesTests(): Promise<void> {
         }
       );
 
-      // 4.3 إثبات انتظار updateUserPlan عبر waiterPool مستقل
+      // 4.3 Prove updateUserPlan contention via independent waiterPool
       const lockUserRes = await app.inject({
         method: 'POST',
         url: '/users',
@@ -527,7 +526,7 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 5: استمرار الحسابات الأخرى دون انتظار عند قفل حساب مختلف (Cross-Tenant Non-Blocking)
+    // Test 5: Cross-Tenant Non-Blocking execution
     // =========================================================================
     {
       const holderClient = await testPool.connect();
@@ -537,7 +536,7 @@ async function runPlanChangesTests(): Promise<void> {
         await holderClient.query('BEGIN ISOLATION LEVEL READ COMMITTED');
         await holderClient.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [accountA.id]);
 
-        // Account B ينفذ تعديل خطة حسابه بالتزامن دون أن يتعطل أو ينتظر
+        // Account B executes plan modification concurrently without blocking
         const updateBRes = await app.inject({
           method: 'PATCH',
           url: '/account/plan',
@@ -547,7 +546,7 @@ async function runPlanChangesTests(): Promise<void> {
 
         assert.equal(updateBRes.statusCode, 200);
 
-        // Account B ينشئ ويعدل خطة خاصة به بنجاح فوري
+        // Account B creates and modifies private plan immediately
         const createBPlanRes = await app.inject({
           method: 'POST',
           url: '/plans',
@@ -588,7 +587,7 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 6: التراجع الذري عن التعديلات الفعلية عند حدوث فشل قبل الالتزام
+    // Test 6: Atomic rollback of actual modifications upon failure before commit
     // =========================================================================
     {
       const initialAccountCheck = await testPool.query<{ plan_id: string }>(
@@ -597,7 +596,7 @@ async function runPlanChangesTests(): Promise<void> {
       );
       const originalPlanId = initialAccountCheck.rows[0].plan_id;
 
-      // إنشاء خطة حساب مميزة للتأكد أن القيمة المكتوبة تختلف قطعياً عن القيمة الحالية
+      // Create distinct plan to prove rollback
       const rollbackProbeRes = await app.inject({
         method: 'POST',
         url: '/plans',
@@ -613,7 +612,7 @@ async function runPlanChangesTests(): Promise<void> {
       const rollbackProbePlan = JSON.parse(rollbackProbeRes.body) as Plan;
       const distinctNewPlanId = rollbackProbePlan.id;
 
-      // إثبات أن القيمة التي ستُكتب مختلفة تماماً عن القيمة الأصلية المسجلة
+      // Prove that value to be written is strictly different from original
       assert.notEqual(
         distinctNewPlanId,
         originalPlanId,
@@ -623,12 +622,12 @@ async function runPlanChangesTests(): Promise<void> {
       let errorCaught = false;
       try {
         await withAccountLock(testPool!, accountA.id, async (client) => {
-          // كتابة فعلية تغير القيمة في قاعدة البيانات أثناء المعاملة
+          // Actual write modifying DB during transaction
           await client.query('UPDATE accounts SET plan_id = $1 WHERE id = $2', [
             distinctNewPlanId,
             accountA.id,
           ]);
-          // محاكاة خطأ فادح قبل إتمام المعاملة
+          // Simulate failure before commit
           throw new Error('Simulated atomic failure before commit');
         });
       } catch (err: unknown) {
@@ -639,7 +638,7 @@ async function runPlanChangesTests(): Promise<void> {
 
       assert.equal(errorCaught, true, 'Expected simulated error to be thrown by transaction runner');
 
-      // التحقق من أن قاعدة البيانات تراجعت عن التعديل تماماً وبقيت القيمة الأصلية ولم تستقر القيمة الجديدة
+      // Verify DB rolled back modification completely and preserved original planId
       const verifyAccountCheck = await testPool.query<{ plan_id: string }>(
         'SELECT plan_id FROM accounts WHERE id = $1',
         [accountA.id]
@@ -651,12 +650,12 @@ async function runPlanChangesTests(): Promise<void> {
     }
 
     // =========================================================================
-    // الاختبار 7: التحقق من معالجة AccountNotFoundError (404) في المسارات الثلاثة عند غياب الحساب
+    // Test 7: Verify AccountNotFoundError (404) handling across three operations when account missing
     // =========================================================================
     {
       const nonExistentAccountId = 'acc_non_existent_000000000000';
 
-      // 7.1 withAccountLock يرمي AccountNotFoundError مباشرة
+      // 7.1 withAccountLock throws AccountNotFoundError directly
       let notFoundThrown = false;
       try {
         await withAccountLock(testPool!, nonExistentAccountId, async () => {
@@ -669,8 +668,7 @@ async function runPlanChangesTests(): Promise<void> {
       }
       assert.equal(notFoundThrown, true, 'Expected AccountNotFoundError when locking missing account');
 
-      // 7.2 فحص معالجة المسارات لغياب الحساب
-      // استدعاء الدوال مباشرة بحساب غير موجود
+      // 7.2 Check direct calls with non-existent account
       await assert.rejects(
         () => updateCustomPlan(testPool!, 'any_plan', nonExistentAccountId, { name: 'New' }),
         AccountNotFoundError

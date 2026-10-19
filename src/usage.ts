@@ -1,5 +1,5 @@
 // src/usage.ts
-// منطق قراءة وعرض الاستخدام الحالي والتاريخي للحسابات والمستخدمين (Parts 23 & 24)
+// Current and historical usage query logic for accounts and users (Parts 23 & 24)
 
 import type { DbExecutor } from './db.js';
 import type {
@@ -15,7 +15,7 @@ import { AccountNotFoundError } from './accounts.js';
 import { UserNotFoundError } from './users.js';
 
 /**
- * خطأ التحقق من معاملات الاستعلام في مسارات الاستخدام
+ * Thrown when usage query parameters fail validation
  */
 export class UsageQueryValidationError extends Error {
   constructor(message = 'Query validation error') {
@@ -25,19 +25,19 @@ export class UsageQueryValidationError extends Error {
 }
 
 /**
- * دالة التحقق من معامِل الشهر في استعلامات الاستخدام (Part 24)
+ * Validates the "month" query parameter for usage endpoints (Part 24)
  *
- * القواعد الصارمة المطبقة:
- * 1. يسمح فقط بالمعامِل "month". أي معامِل إضافي أو مجهول يُرفض فوراً بـ 400.
- * 2. إذا لم يُمرر "month"، تعيد الدالة null للدلالة على استعلام الشهر الحالي.
- * 3. ترفض المصفوفات والقيم المكررة وغير النصية بـ 400.
- * 4. تحصر السنة بين 1000 و 9999 والشهر بين 01 و 12 بنمط: /^[1-9]\d{3}-(0[1-9]|1[0-2])$/
- * 5. تقارن بالشهر الحالي المأخوذ من نفس لقطة الساعة الملتقطة مرة واحدة.
- * 6. إذا كان الشهر مستقبلياً (month > currentUtcMonth): ترفض بـ 400.
+ * Rules applied:
+ * 1. Only "month" parameter is supported; any extra parameter is rejected with 400.
+ * 2. If "month" is omitted, returns null signifying current month query.
+ * 3. Rejects arrays, duplicates, and non-strings with 400.
+ * 4. Enforces 4-digit year between 1000 and 9999 and month between 01 and 12: /^[1-9]\d{3}-(0[1-9]|1[0-2])$/
+ * 5. Compares against current UTC month from same captured clock snapshot.
+ * 6. If month is in the future (month > currentUtcMonth): rejects with 400.
  *
- * @param query كائن معاملات الاستعلام من طلب HTTP
- * @param currentUtcMonth الشهر الحالي بتوقيت UTC بصيغة YYYY-MM
- * @returns الشهر المطلوب بصيغة YYYY-MM أو null إذا لم يُحدد
+ * @param query Query parameter object from HTTP request
+ * @param currentUtcMonth Current UTC calendar month in YYYY-MM format
+ * @returns Requested month in YYYY-MM format or null if omitted
  */
 export function validateUsageMonthQuery(query: unknown, currentUtcMonth: string): string | null {
   if (query === null || query === undefined || typeof query !== 'object') {
@@ -63,7 +63,6 @@ export function validateUsageMonthQuery(query: unknown, currentUtcMonth: string)
   }
 
   const trimmedMonth = rawMonth.trim();
-  // التحقق الصارم من أن السنة 4 أرقام بين 1000 و 9999 والشهر بين 01 و 12
   const monthRegex = /^[1-9]\d{3}-(0[1-9]|1[0-2])$/;
   if (!monthRegex.test(trimmedMonth)) {
     throw new UsageQueryValidationError(
@@ -79,7 +78,7 @@ export function validateUsageMonthQuery(query: unknown, currentUtcMonth: string)
 }
 
 /**
- * دالة مساعدة سابقة للإبقاء على التوافق إن وُجدت استدعاءات خارجية لها
+ * Helper to ensure no unsupported query parameters are passed
  */
 export function assertNoUnsupportedQueryParams(query: unknown): void {
   if (typeof query === 'object' && query !== null) {
@@ -91,15 +90,15 @@ export function assertNoUnsupportedQueryParams(query: unknown): void {
 }
 
 /**
- * خيارات قراءة الاستخدام (مثل حقن الساعة للاختبارات الزمنية وضمان اتساق الشهر)
+ * Usage options interface (such as clock injection for time-dependent testing)
  */
 export interface GetUsageOptions {
   clock?: () => Date;
 }
 
 /**
- * حساب النطاق الزمني للشهر بتوقيت UTC بصيغة [بداية الشهر, بداية الشهر التالي)
- * يُستخدم للبحث الدقيق والمفهرس في سجلات الاستهلاك التاريخية
+ * Computes UTC date range for calendar month [startOfMonth, startOfNextMonth)
+ * Used for indexed range queries on consumption_records.processed_at
  */
 export function getUtcMonthDateRange(yearMonth: string): { start: Date; end: Date } {
   const [yearStr, monthStr] = yearMonth.split('-');
@@ -111,7 +110,7 @@ export function getUtcMonthDateRange(yearMonth: string): { start: Date; end: Dat
 }
 
 /**
- * دالة استخراج بيانات الخطة التاريخية من كائن سياق القرار بأمان
+ * Safely extracts historical plan summary from decision context object
  */
 function extractHistoricalPlan(planObj: unknown): HistoricalPlanSummary | null {
   if (!planObj || typeof planObj !== 'object') {
@@ -138,9 +137,6 @@ function extractHistoricalPlan(planObj: unknown): HistoricalPlanSummary | null {
   };
 }
 
-/**
- * نوع صف نتيجة استعلام استخدام الحساب الحالي من قاعدة البيانات
- */
 interface AccountUsageRow {
   account_id: string;
   plan_id: string;
@@ -152,9 +148,6 @@ interface AccountUsageRow {
   consumed_units: string | number;
 }
 
-/**
- * نوع صف نتيجة استعلام استخدام الحساب لشهر سابق من قاعدة البيانات
- */
 interface AccountHistoricalUsageRow {
   account_id: string;
   total_units: string | number;
@@ -162,9 +155,6 @@ interface AccountHistoricalUsageRow {
   last_request_at: Date | string | null;
 }
 
-/**
- * نوع صف نتيجة استعلام استخدام المستخدم وحصته المشتركة للشهر الحالي
- */
 interface UserUsageRow {
   user_id: string;
   account_id: string;
@@ -184,9 +174,6 @@ interface UserUsageRow {
   account_consumed_units: string | number;
 }
 
-/**
- * نوع صف نتيجة استعلام استخدام المستخدم لشهر سابق من قاعدة البيانات
- */
 interface UserHistoricalUsageRow {
   user_id: string;
   account_id: string;
@@ -197,7 +184,7 @@ interface UserHistoricalUsageRow {
 }
 
 /**
- * استرجاع الاستخدام الحالي للحساب الموثق للشهر الحالي بتوقيت UTC (Part 23)
+ * Retrieves current account usage for active UTC month (Part 23)
  */
 export async function getAccountCurrentUsage(
   executor: DbExecutor,
@@ -262,15 +249,14 @@ export async function getAccountCurrentUsage(
 }
 
 /**
- * استرجاع استخدام الحساب لشهر سابق (Part 24: Historical Account Usage)
+ * Retrieves historical account usage for a past month (Part 24: Historical Account Usage)
  *
- * المبادئ الحاكمة:
- * 1. استهلاك الحساب المحقق يُقرأ من total_units في عداد الشهر.
- * 2. إذا لم يكن هناك عداد للشهر، يُعاد 0.
- * 3. الخطة والحدود تُستخرجان من decision_context لآخر طلب مسجل خلال ذلك الشهر (مقبولاً أو مرفوضاً).
- * 4. إذا لم توجد طلبات في ذلك الشهر، أو كان سياق آخر طلب فارغاً {}، تعود الخطة null.
- * 5. يُحفظ وقت آخر طلب lastRequestAt إذا وُجد الطلب حتى وإن كان سياقه فارغاً.
- * 6. لا يُعرض remaining تاريخياً إطلاقاً.
+ * Guarantees:
+ * 1. Account consumed units read from monthly counter total_units (0 if no counter row).
+ * 2. Plan and caps extracted from decision_context of the latest request recorded in that month.
+ * 3. If no request occurred in that month or decision_context was empty {}, plan returns null.
+ * 4. lastRequestAt records timestamp of latest request if any.
+ * 5. remaining is never returned historically.
  */
 export async function getAccountHistoricalUsage(
   executor: DbExecutor,
@@ -341,7 +327,7 @@ export async function getAccountHistoricalUsage(
 }
 
 /**
- * استرجاع الاستخدام الحالي للمستخدم وحصته المشتركة للشهر الحالي (Part 23)
+ * Retrieves current user usage and shared account quota for active UTC month (Part 23)
  */
 export async function getUserCurrentUsage(
   executor: DbExecutor,
@@ -447,15 +433,14 @@ export async function getUserCurrentUsage(
 }
 
 /**
- * استرجاع استخدام المستخدم لشهر سابق (Part 24: Historical User Usage)
+ * Retrieves historical user usage for a past month (Part 24: Historical User Usage)
  *
- * المبادئ الحاكمة:
- * 1. استهلاك المستخدم والحساب يُقرآن من total_units لعدّاد كل منهما لذلك الشهر.
- * 2. خطة المستخدم وخطة الحساب تُستخرجان من decision_context لآخر طلب مسجل لهذا المستخدم خلال الشهر.
- * 3. إذا لم توجد طلبات لذلك المستخدم في ذلك الشهر، أو كان سياق آخر طلب فارغاً {}، تعود الخطتان null.
- * 4. يُحفظ وقت آخر طلب lastRequestAt إذا وُجد الطلب حتى وإن كان سياقه فارغاً.
- * 5. يُحافظ على العزل التام للمستأجرين ويرمى UserNotFoundError إذا لم يوجد المستخدم ضمن الحساب الموثق.
- * 6. لا يُعرض remaining تاريخياً إطلاقاً.
+ * Guarantees:
+ * 1. Consumed units for user and account read from respective monthly counter total_units.
+ * 2. User plan and account plan extracted from decision_context of latest request in that month.
+ * 3. If no request occurred or context was empty, plans return null.
+ * 4. Strictly enforces multi-tenant boundary; throws UserNotFoundError if user not in authenticated account.
+ * 5. remaining is never returned historically.
  */
 export async function getUserHistoricalUsage(
   executor: DbExecutor,

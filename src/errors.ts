@@ -1,7 +1,7 @@
 // src/errors.ts
 
 /**
- * خطأ عدم وجود الحساب عند محاولة القفل أو التحقق منه داخل العمليات والمعاملات
+ * Thrown when an account record is not found during operations or transactional locking
  */
 export class AccountNotFoundError extends Error {
   constructor(message = 'Account not found') {

@@ -17,20 +17,19 @@ declare module 'fastify' {
 }
 
 /**
- * التعبير النمطي للتحقق الصارم من تنسيق مفتاح API:
- * يبدأ بـ ffp_live_ متبوعة بـ 64 محرفاً ست عشرياً (إجمالي 73 محرفاً)
+ * Strict regex pattern for API key format:
+ * Starts with ffp_live_ followed by 64 hex characters (73 total characters)
  */
 export const API_KEY_FORMAT_REGEX = /^ffp_live_[0-9a-fA-F]{64}$/;
 
 /**
- * رسالة الخطأ الموحدة لحالات المصادقة المرفوضة
+ * Unified error message for rejected authentication attempts
  */
 export const AUTH_ERROR_MESSAGE = 'Invalid or missing API key';
 
 /**
- * استخراج رمز Bearer من ترويسة Authorization
- * يدعم مقارنة اسم المخطط دون حساسية لحالة الأحرف (Bearer, bearer, BEARER)
- * مع الحفاظ التام على قيمة المفتاح كما هي دون أي تحويل
+ * Extracts Bearer token from Authorization header.
+ * Case-insensitive scheme comparison (Bearer, bearer, BEARER) while preserving raw key value.
  */
 export function extractBearerToken(authHeader: string | undefined): string | null {
   if (!authHeader) {
@@ -47,14 +46,14 @@ export function extractBearerToken(authHeader: string | undefined): string | nul
 }
 
 /**
- * التحقق من سلامة تنسيق المفتاح قبل استعلام قاعدة البيانات (Fail-Fast)
+ * Pre-query format validation for API key (Fail-Fast)
  */
 export function validateApiKeyFormat(apiKey: string): boolean {
   return API_KEY_FORMAT_REGEX.test(apiKey);
 }
 
 /**
- * استعلام قاعدة البيانات عن الحساب المرتبط بالمفتاح باستخدام بصمة SHA-256 للمفتاح
+ * Queries database for account associated with SHA-256 hash of raw API key
  */
 export async function authenticateApiKey(
   pool: pg.Pool,
@@ -88,9 +87,9 @@ export async function authenticateApiKey(
 }
 
 /**
- * خطاف ما قبل المعالجة (preHandler hook) لمصادقة الطلبات على المسارات المحمية
- * يوقف تنفيذ الطلب ويرجع 401 مع ترويسة WWW-Authenticate عند غياب المفتاح أو عدم صلاحيته
- * ويرجع 500 برسالة عامة دون تحويل أعطال قاعدة البيانات إلى 401
+ * PreHandler hook for authenticating requests on protected endpoints.
+ * Aborts and returns 401 with WWW-Authenticate header on missing or invalid key.
+ * Returns generic 500 on database failures without masking errors as 401.
  */
 export function createAuthPreHandler(pool?: pg.Pool): preHandlerHookHandler {
   return async (request, reply) => {
@@ -135,4 +134,3 @@ export function createAuthPreHandler(pool?: pg.Pool): preHandlerHookHandler {
     request.account = account;
   };
 }
-

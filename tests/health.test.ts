@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { buildApp } from '../src/app.js';
 
 async function runHealthTests(): Promise<void> {
-  // 1. اختبار التطبيق عندما تكون القاعدة متصلة
+  // 1. Test application when database is healthy
   const healthyApp = buildApp({
     checkHealth: async () => true,
   });
 
   try {
-    // أ. فحص الحياة (Liveness): GET /health
+    // a. Liveness probe: GET /health
     const livenessResponse = await healthyApp.inject({
       method: 'GET',
       url: '/health',
@@ -18,7 +18,7 @@ async function runHealthTests(): Promise<void> {
     assert.deepEqual(livenessResponse.json(), { status: 'ok' });
     console.log('✔ Health check route test passed (GET /health)');
 
-    // ب. فحص الجاهزية المتصلة: GET /health/ready -> 200
+    // b. Connected readiness probe: GET /health/ready -> 200
     const readyResponse = await healthyApp.inject({
       method: 'GET',
       url: '/health/ready',
@@ -30,13 +30,13 @@ async function runHealthTests(): Promise<void> {
     await healthyApp.close();
   }
 
-  // 2. اختبار التطبيق عندما تفشل القاعدة في الاستجابة (Unhealthy dependency)
+  // 2. Test application when database is unhealthy
   const disconnectedApp = buildApp({
     checkHealth: async () => false,
   });
 
   try {
-    // فحص الجاهزية المنقطعة: GET /health/ready -> 503
+    // Disconnected readiness probe: GET /health/ready -> 503
     const unreadyResponse = await disconnectedApp.inject({
       method: 'GET',
       url: '/health/ready',

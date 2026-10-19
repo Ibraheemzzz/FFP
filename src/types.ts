@@ -1,8 +1,8 @@
 // src/types.ts
-// الأنواع الأساسية لنطاق قياس الاستخدام والحصص (Domain Types)
+// Core domain types for the Usage Metering and Quotas Service
 
 /**
- * البيانات التي يرسلها العميل لطلب استهلاك وحدات
+ * Payload sent by clients to request quota consumption
  */
 export interface ConsumptionRequest {
   userId: string;
@@ -11,7 +11,7 @@ export interface ConsumptionRequest {
 }
 
 /**
- * لقطة تمثل الاستهلاك والمتبقي لطرف معين (حساب أو مستخدم)
+ * Snapshot representing consumed and remaining units for an entity (account or user)
  */
 export interface UsageSnapshot {
   consumed: number;
@@ -19,17 +19,17 @@ export interface UsageSnapshot {
 }
 
 /**
- * صاحب الحد أو الحصة التي منعت الطلب
+ * Quota boundary owner that prevented the request
  */
 export type RejectionScope = 'account' | 'user';
 
 /**
- * نوع القاعدة التي تسببت في الرفض
+ * Type of quota rule that caused rejection
  */
 export type RejectionRule = 'monthly_allowance' | 'max_per_request';
 
 /**
- * سبب الرفض المفصل
+ * Detailed rejection reason descriptor
  */
 export interface RejectionReason {
   scope: RejectionScope;
@@ -37,7 +37,7 @@ export interface RejectionReason {
 }
 
 /**
- * تفاصيل القرار في حالة القبول
+ * Decision details for accepted consumption requests
  */
 export interface AcceptedDecision {
   accepted: true;
@@ -47,7 +47,7 @@ export interface AcceptedDecision {
 }
 
 /**
- * تفاصيل القرار في حالة الرفض
+ * Decision details for rejected consumption requests
  */
 export interface RejectedDecision {
   accepted: false;
@@ -58,13 +58,13 @@ export interface RejectedDecision {
 }
 
 /**
- * نوع القرار النهائي (Discriminated Union):
- * إما قرار مقبول يحمل الأرصدة، أو قرار مرفوض يحمل سبب الرفض مع الأرصدة القائمة
+ * Final consumption decision (Discriminated Union):
+ * Either an accepted decision with updated balances, or a rejected decision with reason and intact balances.
  */
 export type ConsumptionDecision = AcceptedDecision | RejectedDecision;
 
 /**
- * ملخص خطة الاستخدام المعروضة في ردود الاستخدام الحالي
+ * Summary of usage plan returned in current usage responses
  */
 export interface UsagePlanSummary {
   id: string;
@@ -75,7 +75,7 @@ export interface UsagePlanSummary {
 }
 
 /**
- * رد استخدام الحساب الحالي (GET /account/usage)
+ * Response for current account usage (GET /account/usage)
  */
 export interface AccountUsageResponse {
   accountId: string;
@@ -85,7 +85,7 @@ export interface AccountUsageResponse {
 }
 
 /**
- * رد استخدام المستخدم وحصته المشتركة مع حسابه (GET /users/:userId/usage)
+ * Response for user usage and shared account quota (GET /users/:userId/usage)
  */
 export interface UserUsageResponse {
   userId: string;
@@ -98,7 +98,7 @@ export interface UserUsageResponse {
 }
 
 /**
- * ملخص خطة الاستخدام التاريخية المستخرجة من سياق آخر طلب مسجل
+ * Historical plan summary extracted from decision context of last logged request
  */
 export interface HistoricalPlanSummary {
   id: string;
@@ -107,7 +107,7 @@ export interface HistoricalPlanSummary {
 }
 
 /**
- * رد استخدام الحساب لشهر سابق (GET /account/usage?month=YYYY-MM)
+ * Response for historical account usage (GET /account/usage?month=YYYY-MM)
  */
 export interface HistoricalAccountUsageResponse {
   accountId: string;
@@ -119,7 +119,7 @@ export interface HistoricalAccountUsageResponse {
 }
 
 /**
- * رد استخدام المستخدم لشهر سابق (GET /users/:userId/usage?month=YYYY-MM)
+ * Response for historical user usage (GET /users/:userId/usage?month=YYYY-MM)
  */
 export interface HistoricalUserUsageResponse {
   userId: string;
@@ -134,7 +134,7 @@ export interface HistoricalUserUsageResponse {
 }
 
 /**
- * عنصر سجل طلب استهلاك مسجل
+ * Recorded request history item
  */
 export interface RequestHistoryItem {
   id: string;
@@ -148,7 +148,7 @@ export interface RequestHistoryItem {
 }
 
 /**
- * بيانات تقسيم الصفحات في سجل الطلبات
+ * Pagination metadata in request history responses
  */
 export interface RequestHistoryPagination {
   limit: number;
@@ -157,7 +157,7 @@ export interface RequestHistoryPagination {
 }
 
 /**
- * رد استعلام سجل الطلبات (GET /requests)
+ * Response for request history queries (GET /requests)
  */
 export interface RequestHistoryResponse {
   items: RequestHistoryItem[];
@@ -165,7 +165,7 @@ export interface RequestHistoryResponse {
 }
 
 /**
- * معلمات تصفية وتقسيم سجل الطلبات بعد التحقق منها
+ * Validated filter and pagination parameters for request history queries
  */
 export interface RequestHistoryFilter {
   limit: number;
@@ -174,4 +174,3 @@ export interface RequestHistoryFilter {
   status?: 'ACCEPTED' | 'REJECTED';
   month?: string;
 }
-

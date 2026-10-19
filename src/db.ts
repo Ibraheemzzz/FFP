@@ -14,16 +14,16 @@ export interface DatabasePoolOptions {
 }
 
 /**
- * إنشاء مجموعة اتصالات PostgreSQL (Connection Pool) باستخدام مكتبة pg المستقلة الشائعة.
- * ملاحظة معمارية: الـ Pool لا يفتح جميع الاتصالات مسبقاً، بل ينشئ اتصالات جديدة
- * عند الحاجة ويعيد استخدامها لتفادي تكلفة فتح اتصال TCP جديد لكل طلب، حتى الحد الأقصى max.
+ * Creates a PostgreSQL connection pool using pg.
+ * Architectural note: The pool does not open all connections upfront, but creates new connections
+ * on demand and reuses them to avoid TCP handshake overhead on each request, up to max limit.
  */
 export function createPool(
   databaseUrl: string,
   options: DatabasePoolOptions = {}
 ): pg.Pool {
   const statementTimeout = options.statementTimeoutMillis ?? 3000;
-  // مهلة استدعاء العميل تكون أطول قليلاً من مهلة تنفيذ الخادم لإتاحة الفرصة لمحرك PostgreSQL لإلغاء الاستعلام أولاً
+  // Client query timeout is slightly longer than statement timeout to allow PostgreSQL engine to cancel first
   const queryTimeout = options.queryTimeoutMillis ?? (statementTimeout + 2000);
 
   const pool = new Pool({
@@ -35,7 +35,7 @@ export function createPool(
     query_timeout: queryTimeout,
   });
 
-  // معالجة أخطاء الاتصالات الخاملة في الخلفية برسالة تشغيلية ثابتة لمنع تسريب أي بيانات حساسة
+  // Handle unexpected errors on idle clients in the background with constant operational message
   pool.on('error', () => {
     console.error('Unexpected error on idle database client');
   });
@@ -44,17 +44,16 @@ export function createPool(
 }
 
 /**
- * فحص استجابة قاعدة البيانات (Readiness Check):
- * يستعير اتصالاً صريحاً من الـ Pool وينفذ استعلام SELECT 1، مع ضمان تحرير الاتصال مرة واحدة فقط داخل finally.
+ * Database readiness and health check:
+ * Leases an explicit client from the pool and runs SELECT 1, guaranteeing single release inside finally.
  *
- * سياسة إدارة وتحرير الاتصال (Connection Recycling vs Discarding):
- * - في حالة النجاح: يعاد الاتصال سليماً إلى المجموعة عبر client.release(false) لإعادة استخدامه.
- * - في حالة الفشل أو تجاوز المهلة: يتم التخلص من الاتصال نهائياً وإغلاقه عبر client.release(true)
- *   لتفادي إعادة استخدام اتصال في حالة غير موثوقة أو غير مكتملة المعاملات.
+ * Connection lifecycle policy (Recycling vs Discarding):
+ * - On success: client is recycled cleanly back to the pool via client.release(false).
+ * - On failure or timeout: client is destroyed via client.release(true) to avoid dirty client reuse.
  *
- * طبيعة المهلات:
- * 1. statement_timeout: مهلة التنفيذ داخل محرك PostgreSQL نفسه؛ عند تجاوزها يلغي المحرك الاستعلام ويحرر موارده.
- * 2. query_timeout: مهلة لاستدعاء الاستعلام عند العميل (Client-side Timeout)، وليست مهلة مقبس أو ضماناً لإلغاء الاستعلام في القاعدة.
+ * Timeout semantics:
+ * 1. statement_timeout: Server-side execution timeout within PostgreSQL engine; aborts query on expiry.
+ * 2. query_timeout: Client-side timeout for receiving query result; does not guarantee backend cancellation.
  */
 export async function checkDatabaseHealth(pool: pg.Pool): Promise<boolean> {
   let client: pg.PoolClient | undefined;
@@ -72,23 +71,22 @@ export async function checkDatabaseHealth(pool: pg.Pool): Promise<boolean> {
     return false;
   } finally {
     if (client) {
-      // تحرير الاتصال مرة واحدة حصراً: إعادة تدوير عند النجاح، أو استبعاد وإتلاف عند الفشل
       client.release(hasFailed);
     }
   }
 }
 
 /**
- * تنفيذ عملية داخل معاملة ذرية مع حجز قفل حصري لصف الحساب بمستوى عزل READ COMMITTED.
+ * Executes an operation inside an atomic transaction under exclusive account row lock at READ COMMITTED isolation.
  *
- * الضمانات والحدود:
- * - القفل ينسق حصراً العمليات التي تلتزم بقفل الحساب نفسه (SELECT ... FOR UPDATE على الحساب).
- * - لا يمنع استعلامات القراءة العادية SELECT (وفق آلية MVCC).
- * - ترتيب الوصول عبر الشبكة لا يضمن أسبقية التنفيذ؛ العملية التي تحوز القفل أولاً هي التي تكتمل أولاً.
- * - تبدأ المعاملة بمستوى عزل صريح READ COMMITTED.
- * - جميع القراءات المؤثرة في القرار تُنفّذ داخل المعاملة بعد نيل القفل حصراً.
- * - في حالة النجاح: لا يُعاد النجاح إلا بعد اكتمال COMMIT بنجاح، ويُعاد الاتصال سليماً إلى المجموعة client.release(false).
- * - في حالة الفشل: تجري محاولة ROLLBACK؛ إذا نجحت يُعاد الاتصال سليماً للمجموعة client.release(false)، وإذا تعثر الالتزام أو التراجع يُهدم الاتصال client.release(true) لمنع إعادة استخدامه بحالة غير موثوقة.
+ * Guarantees & boundaries:
+ * - Lock serializes operations that participate in this account lock protocol (SELECT ... FOR UPDATE on accounts).
+ * - Non-blocking for regular SELECT queries under MVCC.
+ * - Lock acquisition order dictates processing sequence regardless of network arrival.
+ * - Starts with explicit READ COMMITTED isolation level.
+ * - Operational reads affecting decision execute strictly after acquiring the account lock.
+ * - On success: Returns only after successful COMMIT; connection recycled via client.release(false).
+ * - On failure: Attempts ROLLBACK; connection destroyed via client.release(true) if commit or rollback fails.
  */
 export async function withAccountLock<T>(
   pool: pg.Pool,
@@ -115,26 +113,22 @@ export async function withAccountLock<T>(
     try {
       await client.query('COMMIT');
     } catch (commitErr) {
-      // فشل الالتزام يعني أن حالة الاتصال غير موثوقة أو غير معلومة، فيجب إتلافه
       shouldDiscard = true;
       throw commitErr;
     }
 
     return result;
   } catch (err) {
-    // إذا لم يكن الفشل بسبب خطأ أثناء COMMIT، نحاول التراجع
     if (!shouldDiscard) {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackErr) {
-        // فشل التراجع يعني أن الاتصال في حالة غير صالحة ويجب إتلافه
         shouldDiscard = true;
         console.error('Failed to rollback transaction; discarding connection');
       }
     }
     throw err;
   } finally {
-    // إعادة الاتصال سليماً إلى المجموعة إذا كان صالحاً (false)، أو إتلافه إذا تعثر الالتزام أو التراجع (true)
     client.release(shouldDiscard);
   }
 }

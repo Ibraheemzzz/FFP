@@ -28,20 +28,20 @@ export class AccountValidationError extends Error {
 }
 
 /**
- * الخطة العامة الافتراضية للحسابات المسجلة حديثاً في حال عدم تحديد خطة
+ * Default public plan assigned to newly registered accounts when no planId is specified
  */
 export const DEFAULT_ACCOUNT_PLAN_ID = 'plan_default_account';
 
 /**
- * حساب بصمة SHA-256 للمفتاح الكامل
+ * Calculates SHA-256 hash for raw API key
  */
 export function hashApiKey(apiKey: string): string {
   return crypto.createHash('sha256').update(apiKey).digest('hex');
 }
 
 /**
- * توليد مفتاح API تشفيري آمن عالي العشوائية وحساب بصمته
- * ملاحظة أمنية: يُحفظ في قاعدة البيانات بصمة SHA-256 للمفتاح فقط، ولا يُخزن المفتاح الخام أبداً
+ * Generates a cryptographically secure random API key and its SHA-256 hash.
+ * Security note: Only the hash is persisted to the database; the raw key is never stored.
  */
 export function generateApiKey(): { rawKey: string; hash: string } {
   const randomHex = crypto.randomBytes(32).toString('hex');
@@ -51,7 +51,7 @@ export function generateApiKey(): { rawKey: string; hash: string } {
 }
 
 /**
- * توليد معرّف فريد للحساب ببادئة قياسية
+ * Generates unique account ID with standard prefix
  */
 export function generateAccountId(): string {
   const randomId = crypto.randomBytes(12).toString('hex');
@@ -59,7 +59,7 @@ export function generateAccountId(): string {
 }
 
 /**
- * التحقق الصارم من صحة مدخلات إنشاء الحساب أثناء التشغيل
+ * Validates account creation request body at runtime
  */
 export function validateCreateAccountInput(input: unknown): CreateAccountInput {
   if (typeof input !== 'object' || input === null) {
@@ -68,7 +68,7 @@ export function validateCreateAccountInput(input: unknown): CreateAccountInput {
 
   const rawInput = input as Record<string, unknown>;
 
-  // التحقق من اسم الحساب: نص، غير فارغ بعد trim، وألا يتجاوز 100 محرف
+  // Validate account name: string, non-empty after trim, max 100 characters
   if (typeof rawInput.name !== 'string') {
     throw new AccountValidationError('Account name must be a string');
   }
@@ -82,7 +82,7 @@ export function validateCreateAccountInput(input: unknown): CreateAccountInput {
     throw new AccountValidationError('Account name must not exceed 100 characters');
   }
 
-  // التحقق من معرف الخطة (في حال تم تمريره)
+  // Validate planId if provided
   let trimmedPlanId: string | undefined = undefined;
   if (rawInput.planId !== undefined) {
     if (typeof rawInput.planId !== 'string') {
@@ -106,11 +106,10 @@ export function validateCreateAccountInput(input: unknown): CreateAccountInput {
 }
 
 /**
- * إنشاء حساب جديد وحفظه في قاعدة البيانات وإصدار المفتاح لمرة واحدة فقط
- * 
- * ملاحظة معمارية:
- * إعادة إرسال نفس الطلب ستنشئ حساباً جديداً بمفتاح جديد؛ نظام منع التكرار (Idempotency)
- * غير مطلوب لإنشاء الحسابات في هذه المرحلة، ومخصص لطلبات الاستهلاك اللاحقة.
+ * Registers a new account, persists it to database, and returns the raw key once.
+ * Architectural note:
+ * Retrying this operation creates a new distinct account; deduplication/idempotency
+ * is intentionally reserved for consumption requests.
  */
 export async function createAccount(
   pool: pg.Pool,
@@ -118,7 +117,7 @@ export async function createAccount(
 ): Promise<AccountCreatedResult> {
   const targetPlanId = validatedInput.planId ?? DEFAULT_ACCOUNT_PLAN_ID;
 
-  // 1. التحقق من وجود الخطة ونوعها وملكيتها العامة
+  // 1. Validate plan existence, scope, and public accessibility
   const planRes = await pool.query<{ id: string; type: string; owner_account_id: string | null }>(
     'SELECT id, type, owner_account_id FROM plans WHERE id = $1',
     [targetPlanId]
@@ -130,21 +129,21 @@ export async function createAccount(
 
   const plan = planRes.rows[0];
 
-  // يجب أن تكون الخطة المسندة للحساب من نوع ACCOUNT حصراً
+  // Assigned plan must be of type ACCOUNT
   if (plan.type !== 'ACCOUNT') {
     throw new AccountValidationError(`Plan '${targetPlanId}' is a ${plan.type} plan, not an ACCOUNT plan`);
   }
 
-  // لا يجوز للحساب الجديد استخدام خطة مخصصة مملوكة لحساب آخر
+  // New accounts cannot adopt custom plans owned by another account
   if (plan.owner_account_id !== null) {
     throw new AccountValidationError(`Cannot assign custom plan '${targetPlanId}' owned by another account`);
   }
 
-  // 2. توليد المعرف والمفتاح والبصمة
+  // 2. Generate ID, key, and hash
   const accountId = generateAccountId();
   const { rawKey, hash } = generateApiKey();
 
-  // 3. حفظ الحساب في قاعدة البيانات
+  // 3. Persist account to database
   const insertRes = await pool.query<{
     id: string;
     name: string;
@@ -182,10 +181,10 @@ export interface AccountProfile {
 const ALLOWED_UPDATE_ACCOUNT_PLAN_FIELDS = new Set(['planId']);
 
 /**
- * التحقق الصارم من مدخلات تحديث خطة الحساب:
- * - يتطلب كائناً غير فارغ يحتوي planId كنص غير فارغ بحد أقصى 64 محرفاً
- * - يرفض أي حقول إضافية غير planId
- * - يرفض null صراحة
+ * Validates account plan update input:
+ * - Requires non-empty object containing planId string (max 64 characters)
+ * - Rejects unknown fields
+ * - Explicitly rejects null
  */
 export function validateUpdateAccountPlanInput(body: unknown): UpdateAccountPlanInput {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -230,12 +229,12 @@ export function validateUpdateAccountPlanInput(body: unknown): UpdateAccountPlan
 }
 
 /**
- * تحديث خطة الحساب الموثق:
- * - التحقق من إتاحة الخطة المستهدفة للحساب الموثق عبر getAccessiblePlan
- * - توحيد رسالة الخطأ للخطة غير الموجودة أو المملوكة لحساب آخر
- * - التحقق من أن نوع الخطة هو ACCOUNT حصراً
- * - تنفيذ UPDATE ذري مشروط بمعرّف الحساب الموثق حصراً
- * - فحص وجود الصف المتأثر لتجنب الانهيار عند قراءة صف غير موجود
+ * Updates plan assigned to authenticated account:
+ * - Verifies target plan accessibility via getAccessiblePlan on transaction client
+ * - Emits unified error message for missing or inaccessible foreign plans
+ * - Enforces ACCOUNT plan type requirement
+ * - Executes atomic UPDATE scoped strictly by authenticated account ID
+ * - Verifies affected row count to handle missing account gracefully
  */
 export async function updateAccountPlan(
   pool: pg.Pool,
@@ -243,20 +242,20 @@ export async function updateAccountPlan(
   newPlanId: string
 ): Promise<AccountProfile> {
   return withAccountLock(pool, accountId, async (client) => {
-    // 1. التحقق من إتاحة الخطة للحساب الموثق (خطة عامة أو خاصة بنفس الحساب) باستخدام اتصال المعاملة
+    // 1. Verify plan accessibility on the transaction client
     const plan = await getAccessiblePlan(client, newPlanId, accountId);
     if (!plan) {
       throw new AccountValidationError('Plan not found or not accessible');
     }
 
-    // 2. التحقق من أن نوع الخطة هو ACCOUNT
+    // 2. Verify plan scope is ACCOUNT
     if (plan.type !== 'ACCOUNT') {
       throw new AccountValidationError(
         `Plan '${newPlanId}' is a ${plan.type} plan, not an ACCOUNT plan`
       );
     }
 
-    // 3. التحديث الذري لحساب المالك على نفس اتصال المعاملة
+    // 3. Execute atomic UPDATE on the leased transaction client
     const result = await client.query<{
       id: string;
       name: string;
@@ -270,7 +269,7 @@ export async function updateAccountPlan(
       [newPlanId, accountId]
     );
 
-    // 4. فحص عدد الصفوف للتأكد من وجود الحساب وعدم الانهيار
+    // 4. Verify row count
     if (result.rows.length === 0) {
       throw new AccountNotFoundError('Account not found');
     }
@@ -284,4 +283,3 @@ export async function updateAccountPlan(
     };
   });
 }
-

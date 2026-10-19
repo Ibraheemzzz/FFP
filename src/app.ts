@@ -63,9 +63,9 @@ export interface AppOptions {
 }
 
 /**
- * دالة بناء التطبيق (App Factory):
- * تنشئ نسخة Fastify وتضبط مسارات الخدمة بالكامل دون فتح أي منفذ شبكة.
- * تتطلب دالة checkHealth لفحص جاهزية الاعتماديات (قاعدة البيانات).
+ * Application Factory (buildApp):
+ * Creates Fastify instance and registers all service routes without opening network ports.
+ * Requires checkHealth function to verify dependency readiness.
  */
 export function buildApp(options: AppOptions): FastifyInstance {
   const app = Fastify({
@@ -75,12 +75,12 @@ export function buildApp(options: AppOptions): FastifyInstance {
     logger: options.logger ?? false,
   });
 
-  // 1. ترويسة x-request-id مرفقة دائماً لجميع الردود ومولدة من الخادم حصراً
+  // 1. Universal server-generated x-request-id header attached on all HTTP responses
   app.addHook('onSend', async (request, reply) => {
     reply.header('x-request-id', request.id);
   });
 
-  // 2. تسجيل منظم للطلب مكتملاً لمرة واحدة دون تكرار ودون تسجيل الترويسات أو الأجسام
+  // 2. Structured single-line request completion logging without logging headers or bodies
   app.addHook('onResponse', async (request, reply) => {
     const urlPath = request.url.split('?')[0];
     request.log.info(
@@ -96,7 +96,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     );
   });
 
-  // 3. معالج الأخطاء المركزي لحماية التفاصيل وحصر أخطاء Fastify المعروفة بدقة
+  // 3. Centralized error handler protecting sensitive internals and handling known Fastify protocol errors
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') {
       return reply.code(415).send({ error: 'Unsupported Media Type' });
@@ -125,12 +125,12 @@ export function buildApp(options: AppOptions): FastifyInstance {
     return reply.code(500).send({ error: 'Internal Server Error' });
   });
 
-  // 1. مسار فحص الحياة (Liveness): يفحص أن عملية Node.js تستجيب
+  // 1. Liveness check: verifies Node.js process responds
   app.get('/health', async (_request, _reply) => {
     return { status: 'ok' };
   });
 
-  // 2. مسار فحص الجاهزية (Readiness): يستدعي دالة الفحص الإلزامية
+  // 2. Readiness check: invokes mandatory dependency health check
   app.get('/health/ready', async (_request, reply) => {
     const isHealthy = await options.checkHealth();
 
@@ -141,7 +141,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     return reply.code(503).send({ ready: false, database: 'disconnected' });
   });
 
-  // 3. مسار تسجيل الحساب الجديد وإصدار مفتاح API لأول مرة: POST /accounts
+  // 3. Register new account and issue API key: POST /accounts
   app.post('/accounts', async (request, reply) => {
     if (!options.pool) {
       return reply.code(500).send({ error: 'Database pool is not configured' });
@@ -163,7 +163,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   });
 
-  // 4. مسار استرجاع بيانات الحساب الحالي الموثق بمفتاح API: GET /account/me
+  // 4. Retrieve authenticated account profile: GET /account/me
   const requireAuth = createAuthPreHandler(options.pool);
 
   app.get(
@@ -179,7 +179,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 5. مسار تغيير خطة الحساب: PATCH /account/plan (Part 14)
+  // 5. Update account plan: PATCH /account/plan (Part 14)
   app.patch(
     '/account/plan',
     { preHandler: requireAuth },
@@ -214,7 +214,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 6. مسار استرجاع خطة متاحة للحساب الموثق: GET /plans/:planId
+  // 6. Retrieve accessible plan by ID: GET /plans/:planId
   app.get<{ Params: { planId: string } }>(
     '/plans/:planId',
     { preHandler: requireAuth },
@@ -243,7 +243,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 6. مسار إنشاء مستخدم وإسناد خطة له: POST /users
+  // 7. Create user and assign plan: POST /users
   app.post(
     '/users',
     { preHandler: requireAuth },
@@ -274,7 +274,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 7. مسار استرجاع بيانات مستخدم: GET /users/:userId
+  // 8. Retrieve user details: GET /users/:userId
   app.get<{ Params: { userId: string } }>(
     '/users/:userId',
     { preHandler: requireAuth },
@@ -302,7 +302,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 8. مسار تغيير خطة مستخدم: PATCH /users/:userId/plan
+  // 9. Update user plan: PATCH /users/:userId/plan
   app.patch<{ Params: { userId: string } }>(
     '/users/:userId/plan',
     { preHandler: requireAuth },
@@ -342,7 +342,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 9. مسار استرجاع قائمة الخطط المتاحة للحساب: GET /plans
+  // 10. List plans accessible to account: GET /plans
   app.get<{ Querystring: { type?: unknown } }>(
     '/plans',
     { preHandler: requireAuth },
@@ -370,7 +370,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 10. مسار إنشاء خطة خاصة: POST /plans
+  // 11. Create custom plan: POST /plans
   app.post(
     '/plans',
     { preHandler: requireAuth },
@@ -401,7 +401,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 11. مسار تعديل خطة خاصة: PATCH /plans/:planId
+  // 12. Update custom plan: PATCH /plans/:planId
   app.patch<{ Params: { planId: string } }>(
     '/plans/:planId',
     { preHandler: requireAuth },
@@ -444,7 +444,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 12. مسار استرجاع استخدام الحساب (الحالي والتاريخي): GET /account/usage (Parts 23 & 24)
+  // 13. Retrieve account usage (current or historical): GET /account/usage (Parts 23 & 24)
   app.get(
     '/account/usage',
     { preHandler: requireAuth },
@@ -485,7 +485,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 13. مسار استرجاع استخدام المستخدم (الحالي والتاريخي): GET /users/:userId/usage (Parts 23 & 24)
+  // 14. Retrieve user usage (current or historical): GET /users/:userId/usage (Parts 23 & 24)
   app.get<{ Params: { userId: string } }>(
     '/users/:userId/usage',
     { preHandler: requireAuth },
@@ -530,7 +530,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 14. مسار معالجة طلب الاستهلاك واحتساب الحصص: POST /consumptions
+  // 15. Process consumption request and evaluate quotas: POST /consumptions
   app.post(
     '/consumptions',
     { preHandler: requireAuth },
@@ -571,7 +571,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
   );
 
-  // 15. مسار استعلام سجل طلبات الاستهلاك وتقسيم الصفحات: GET /requests (Part 25)
+  // 16. Query consumption request history and pagination: GET /requests (Part 25)
   app.get(
     '/requests',
     { preHandler: requireAuth },
@@ -602,5 +602,3 @@ export function buildApp(options: AppOptions): FastifyInstance {
 
   return app;
 }
-
-

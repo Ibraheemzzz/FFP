@@ -51,7 +51,7 @@ export class UserNotFoundError extends Error {
 }
 
 /**
- * الخطة الافتراضية العامة للمستخدمين عند عدم تحديد خطة في طلب الإنشاء
+ * Public default user plan assigned when planId is omitted in creation request
  */
 export const DEFAULT_USER_PLAN_ID = 'plan_default_user';
 
@@ -59,12 +59,12 @@ const ALLOWED_CREATE_USER_FIELDS = new Set(['externalId', 'planId']);
 const ALLOWED_UPDATE_USER_PLAN_FIELDS = new Set(['planId']);
 
 /**
- * التحقق من صحة مدخلات إنشاء مستخدم جديد:
- * - يسمح بـ undefined أو {} لاعتماد الخطة الافتراضية
- * - يرفض null أو المصفوفات أو الأنواع البدائية
- * - يرفض أي حقول غير معروفة أو مكتوبة بحالة أحرف مختلفة (حساس لحالة الأحرف)
- * - يتحقق من أن externalId اختياري، نصي غير فارغ بحد أقصى 100 محرف
- * - يتحقق من أن planId اختياري، نصي غير فارغ بحد أقصى 64 محرفاً
+ * Validates user creation input:
+ * - Allows undefined or {} to adopt default plan
+ * - Rejects null, arrays, or primitives
+ * - Rejects unknown or case-mismatched fields
+ * - Validates externalId: optional, non-empty string, max 100 characters
+ * - Validates planId: optional, non-empty string, max 64 characters
  */
 export function validateCreateUserInput(body: unknown): CreateUserInput {
   if (body === undefined) {
@@ -119,9 +119,9 @@ export function validateCreateUserInput(body: unknown): CreateUserInput {
 }
 
 /**
- * التحقق من صحة مدخلات تغيير خطة المستخدم:
- * - يتطلب كائناً غير فارغ يحتوي planId كنص غير فارغ بحد أقصى 64 محرفاً
- * - يرفض أي حقول إضافية غير planId أو مكتوبة بحالة أحرف مختلفة
+ * Validates user plan update input:
+ * - Requires non-empty object containing planId string (max 64 characters)
+ * - Rejects unknown or case-mismatched fields
  */
 export function validateUpdateUserPlanInput(body: unknown): UpdateUserPlanInput {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -157,10 +157,10 @@ export function validateUpdateUserPlanInput(body: unknown): UpdateUserPlanInput 
 }
 
 /**
- * التحقق المشترك من صلاحية خطة المستخدم:
- * - التحقق من وجود الخطة وإتاحتها للحساب الموثق (خطة عامة أو خاصة بنفس الحساب)
- * - إعادة رسالة موحدة 400 للخطة المفقودة أو الخاصة بحساب آخر
- * - التحقق من أن نوع الخطة هو USER حصراً
+ * Validates user plan accessibility and scope:
+ * - Verifies plan exists and is accessible to authenticated account
+ * - Emits unified error message for missing or foreign plans
+ * - Verifies plan type is strictly USER
  */
 export async function validateAccessibleUserPlan(
   db: DbExecutor,
@@ -179,10 +179,10 @@ export async function validateAccessibleUserPlan(
 }
 
 /**
- * إنشاء مستخدم جديد تحت الحساب الموثق:
- * - التحقق من إتاحة الخطة ونوعها
- * - توليد معرّف عشوائي مشفر
- * - حصر تحويل خطأ 23505 إلى UserConflictError بقيد uq_users_account_external حصراً
+ * Creates new user under authenticated account:
+ * - Validates plan accessibility and scope
+ * - Generates random cryptographic ID
+ * - Maps 23505 unique constraint violation on uq_users_account_external to UserConflictError
  */
 export async function createUser(
   pool: pg.Pool,
@@ -227,8 +227,8 @@ export async function createUser(
 }
 
 /**
- * استرجاع مستخدم محدد بالمعرّف مع فرض شرط العزل بالحساب الموثق:
- * يعيد null إذا لم يكن المستخدم موجوداً أو كان يتبع لحساب آخر
+ * Retrieves user by ID scoped strictly to authenticated account:
+ * Returns null if user does not exist or belongs to another tenant
  */
 export async function getUserById(
   db: DbExecutor,
@@ -257,12 +257,12 @@ export async function getUserById(
 }
 
 /**
- * تغيير خطة مستخدم:
- * - تنفيذ العملية داخل معاملة ذرية مع قفل الحساب عبر withAccountLock
- * - التحقق أولاً بعد نيل القفل من وجود المستخدم وانتمائه للحساب الموثق
- * - التحقق من إتاحة الخطة الجديدة وصحة نوعها USER على اتصال المعاملة
- * - تنفيذ UPDATE مقيداً بالمعرّف والحساب معاً على نفس اتصال المعاملة
- * - تعديل plan_id فقط دون تعديل أي استهلاك سابق
+ * Updates user plan assignment:
+ * - Executes inside atomic transaction with account row lock via withAccountLock
+ * - Verifies user exists under authenticated account after lock acquisition
+ * - Validates new plan accessibility and USER scope on transaction client
+ * - Executes direct UPDATE restricted by user ID and account ID
+ * - Modifies plan_id only; preserves historical consumption untouched
  */
 export async function updateUserPlan(
   pool: pg.Pool,
@@ -271,16 +271,16 @@ export async function updateUserPlan(
   newPlanId: string
 ): Promise<User> {
   return withAccountLock(pool, accountId, async (client) => {
-    // 1. التحقق أولاً من وجود المستخدم ضمن الحساب الموثق بعد نيل القفل
+    // 1. Verify user exists under authenticated account after acquiring lock
     const existingUser = await getUserById(client, userId, accountId);
     if (!existingUser) {
       throw new UserNotFoundError('User not found');
     }
 
-    // 2. التحقق من صلاحية ونوع الخطة الجديدة على اتصال المعاملة
+    // 2. Validate new plan accessibility and type on transaction client
     await validateAccessibleUserPlan(client, newPlanId, accountId);
 
-    // 3. التحديث المباشر المقيد بمعرّف المستخدم والحساب
+    // 3. Direct UPDATE restricted by user and account
     const result = await client.query<UserRow>(
       `UPDATE users
        SET plan_id = $1

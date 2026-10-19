@@ -1,7 +1,7 @@
 -- migrations/003_add_decision_context_to_consumption_records.sql
--- إضافة عمود decision_context لحفظ معرّفات الخطط وحدودها والأرصدة السابقة وقت اتخاذ القرار
--- ملاحظة معمارية: القيمة الافتراضية '{}' هي للتوافق مع السجلات القديمة السابقة حصراً؛
--- جميع القرارات الجديدة (المقبولة والمرفوضة) ملزمة بإدراج السياق التاريخي الكامل صراحةً.
+-- Add decision_context column to record plan IDs, caps, and pre-decision balances at decision time
+-- Architectural note: The default '{}' is strictly for backward compatibility with pre-existing records;
+-- All new decisions (accepted and rejected) are required to explicitly persist full historical decision context.
 
 ALTER TABLE consumption_records
 ADD COLUMN decision_context JSONB NOT NULL DEFAULT '{}'::jsonb;

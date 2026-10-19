@@ -9,7 +9,7 @@ import { createPool } from '../src/db.js';
 import { runMigrations } from '../src/migrator.js';
 
 /**
- * دالة مساعدة لتعديل مسار اسم قاعدة البيانات داخل رابط الاتصال
+ * Helper to construct a database URL with a specific database name
  */
 function getDatabaseUrl(baseUrl: string, dbName: string): string {
   const parsed = new URL(baseUrl);
@@ -18,7 +18,7 @@ function getDatabaseUrl(baseUrl: string, dbName: string): string {
 }
 
 async function runIsolationTests(): Promise<void> {
-  // 1. تحميل إعدادات البيئة
+  // 1. Load environment configuration
   initEnvironment();
   const config = loadConfig();
 
@@ -32,21 +32,21 @@ async function runIsolationTests(): Promise<void> {
   let testExecutionError: unknown = null;
 
   try {
-    // 2. إنشاء قاعدة بيانات الاختبار المعزولة باسم فريد وتتبع نجاح إنشائها
+    // 2. Setup isolated test database with unique name
     await adminPool.query(`CREATE DATABASE ${TEST_DB_NAME}`);
     isDatabaseCreated = true;
 
     testPool = createPool(getDatabaseUrl(config.DATABASE_URL, TEST_DB_NAME));
     await runMigrations(testPool);
 
-    // 3. بناء تطبيق Fastify
+    // 3. Build Fastify application
     const testApp = buildApp({
       checkHealth: async () => true,
       pool: testPool,
     });
     app = testApp;
 
-    // 4. إنشاء حسابين مستقلين (Account A و Account B)
+    // 4. Create two independent accounts (Account A and Account B)
     const resAccountA = await testApp.inject({
       method: 'POST',
       url: '/accounts',
@@ -63,15 +63,15 @@ async function runIsolationTests(): Promise<void> {
     assert.equal(resAccountB.statusCode, 201, 'Account B creation should return 201');
     const accountB = resAccountB.json<{ id: string; apiKey: string }>();
 
-    // 5. إعداد بيانات الاختبار مباشرة عبر استعلامات SQL (تجنباً لاستباق الأجزاء اللاحقة)
-    // أ. خطة خاصة مملوكة حصراً للحساب A
+    // 5. Setup test data directly via SQL queries
+    // a. Private plan owned exclusively by Account A
     await testPool.query(
       `INSERT INTO plans (id, name, type, monthly_limit, per_request_limit, owner_account_id)
        VALUES ('plan_private_alpha', 'Alpha Custom Plan', 'ACCOUNT', 80000, 800, $1)`,
       [accountA.id]
     );
 
-    // ب. مستخدم تابع للحساب A
+    // b. User belonging to Account A
     await testPool.query(
       `INSERT INTO users (id, account_id, plan_id, external_id)
        VALUES ('usr_alpha_1', $1, 'plan_default_user', 'ext_alpha_1')`,
@@ -79,7 +79,7 @@ async function runIsolationTests(): Promise<void> {
     );
 
     // -------------------------------------------------------------------------
-    // اختبار 1: الحساب A يستعلم بنجاح عن خطته الخاصة -> 200 OK
+    // Test 1: Account A successfully retrieves its own private plan -> 200 OK
     // -------------------------------------------------------------------------
     const resAOwnPlan = await testApp.inject({
       method: 'GET',
@@ -104,7 +104,7 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Account successfully retrieved its own private plan (GET /plans/:planId -> 200)');
 
     // -------------------------------------------------------------------------
-    // اختبار 2: الحساب A والحساب B يستعلمان بنجاح عن خطة عامة (owner_account_id IS NULL) -> 200 OK
+    // Test 2: Both accounts successfully retrieve public plan (owner_account_id IS NULL) -> 200 OK
     // -------------------------------------------------------------------------
     const resAPublic = await testApp.inject({
       method: 'GET',
@@ -128,8 +128,8 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Both accounts successfully retrieved accessible public plan (200)');
 
     // -------------------------------------------------------------------------
-    // اختبار 3: الحساب B يحاول استعلام خطة الحساب A الخاصة -> 404 Not Found
-    // (منع الوصول يحدث في الاستعلام نفسه)
+    // Test 3: Account B attempts to query Account A's private plan -> 404 Not Found
+    // (Access control enforced in the query itself)
     // -------------------------------------------------------------------------
     const resBOtherPrivate = await testApp.inject({
       method: 'GET',
@@ -152,7 +152,7 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Cross-account private plan access rejected with 404 Not Found');
 
     // -------------------------------------------------------------------------
-    // اختبار 4: الحساب B يستعلم عن خطة غير موجودة أصلاً -> نفس رد 404 Not Found تماماً
+    // Test 4: Account B queries a completely non-existent plan -> identical 404 Not Found response
     // -------------------------------------------------------------------------
     const resBNonExistent = await testApp.inject({
       method: 'GET',
@@ -171,8 +171,8 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Non-existent plan returns identical 404 response (unifying missing and inaccessible)');
 
     // -------------------------------------------------------------------------
-    // اختبار 5: محاولة تزييف accountId عبر query parameters وترويسات مخصصة
-    // يتم تجاهل المعرّف المزيّف والاعتماد حصراً على المفتاح الموثق -> 404 Not Found
+    // Test 5: Spoofed accountId via query parameters and custom headers
+    // Spoofed identifier is ignored; identity strictly derives from authenticated key -> 404 Not Found
     // -------------------------------------------------------------------------
     const resSpoofed = await testApp.inject({
       method: 'GET',
@@ -192,17 +192,17 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Spoofed accountId via query params and headers ignored; identity strictly derived from API key');
 
     // -------------------------------------------------------------------------
-    // اختبار 6: اختبار استعلام SQL المباشر لملكية المستخدم (شرط الاستعلام فقط)
-    // ملاحظة: هذا الاختبار يختبر شرط الاستعلام لقاعدة البيانات مباشرة؛ مسارات المستخدمين ستنفذ في الجزء 10
+    // Test 6: Direct SQL query test for user ownership condition
+    // Note: This test verifies query conditions directly in DB; user routes tested in subsequent parts
     // -------------------------------------------------------------------------
     const userQuery = 'SELECT id, account_id, plan_id FROM users WHERE id = $1 AND account_id = $2';
 
-    // أ. استعلام الحساب A لمستخدمه -> يعيد الصف بنجاح
+    // a. Account A query for its user -> successfully returns row
     const resUserA = await testPool.query(userQuery, ['usr_alpha_1', accountA.id]);
     assert.equal(resUserA.rows.length, 1, 'Query for user with owner accountId must return row');
     assert.equal(resUserA.rows[0].id, 'usr_alpha_1');
 
-    // ب. استعلام الحساب B لنفس المستخدم -> يعيد 0 صفوف (المنع يحدث في الاستعلام نفسه)
+    // b. Account B query for same user -> returns 0 rows (isolation inside query)
     const resUserB = await testPool.query(userQuery, ['usr_alpha_1', accountB.id]);
     assert.equal(
       resUserB.rows.length,
@@ -212,7 +212,7 @@ async function runIsolationTests(): Promise<void> {
     console.log('✔ Direct SQL query condition for user ownership verified (0 rows returned for non-owner account)');
 
     // -------------------------------------------------------------------------
-    // اختبار 7: رفض الوصول غير الموثق للمسار -> 401 Unauthorized
+    // Test 7: Reject unauthenticated access to route -> 401 Unauthorized
     // -------------------------------------------------------------------------
     const resUnauth = await testApp.inject({
       method: 'GET',
@@ -222,7 +222,7 @@ async function runIsolationTests(): Promise<void> {
     assert.equal(resUnauth.headers['www-authenticate'], 'Bearer');
 
     // -------------------------------------------------------------------------
-    // اختبار 8: معالجة أخطاء قاعدة البيانات برد 500 عام آمن دون تسريب التفاصيل
+    // Test 8: Handle database errors with generic safe 500 without leaking details
     // -------------------------------------------------------------------------
     const failingDbPool = {
       query: async () => {
@@ -259,7 +259,7 @@ async function runIsolationTests(): Promise<void> {
     testExecutionError = err;
   } finally {
     // -------------------------------------------------------------------------
-    // تنظيف متسلسل ومستقل للموارد (Sequential and Independent Resource Cleanup)
+    // Sequential and Independent Resource Cleanup
     // -------------------------------------------------------------------------
     let cleanupError: unknown = null;
 
@@ -297,7 +297,7 @@ async function runIsolationTests(): Promise<void> {
       console.error('Failed to close adminPool cleanly during cleanup:', err);
     }
 
-    // الحفاظ على خطأ الاختبار الأصلي وعدم طمسه بخطأ التنظيف
+    // Preserve original test error and do not mask with cleanup error
     if (testExecutionError) {
       throw testExecutionError;
     }

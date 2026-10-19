@@ -5,7 +5,7 @@ import { loadConfig } from '../src/config.js';
 async function runConfigTests(): Promise<void> {
   const validDbUrl = 'postgres://user:secretpass@localhost:5432/mydb';
 
-  // 1. اختبار القيم الافتراضية السليمة مع توفير DATABASE_URL
+  // 1. Test default values with valid DATABASE_URL provided
   const defaultConfig = loadConfig({
     DATABASE_URL: validDbUrl,
   });
@@ -14,7 +14,7 @@ async function runConfigTests(): Promise<void> {
   assert.equal(defaultConfig.DATABASE_URL, validDbUrl);
   console.log('✔ Default configuration test passed');
 
-  // 2. اختبار تخصيص المنفذ والمضيف بنجاح
+  // 2. Test custom port and host configuration
   const customConfig = loadConfig({
     PORT: '8080',
     HOST: '0.0.0.0',
@@ -24,7 +24,7 @@ async function runConfigTests(): Promise<void> {
   assert.equal(customConfig.HOST, '0.0.0.0');
   console.log('✔ Custom configuration test passed');
 
-  // 3. اختبار رفض المنافذ غير الصالحة (نص، نص جزئي، خارج النطاق 1-65535)
+  // 3. Test rejection of invalid ports (string, alphanumeric, out-of-range 1-65535, float)
   const invalidPorts = ['abc', '3000abc', '0', '-5', '65536', '3000.5'];
   for (const port of invalidPorts) {
     assert.throws(
@@ -35,7 +35,7 @@ async function runConfigTests(): Promise<void> {
   }
   console.log('✔ Invalid ports validation test passed');
 
-  // 4. اختبار رفض غياب DATABASE_URL
+  // 4. Test rejection when DATABASE_URL is missing
   assert.throws(
     () => loadConfig({}),
     /Missing required configuration: DATABASE_URL/,
@@ -43,7 +43,7 @@ async function runConfigTests(): Promise<void> {
   );
   console.log('✔ Missing DATABASE_URL test passed');
 
-  // 5. اختبار رفض بروتوكول غير postgresql أو postgres
+  // 5. Test rejection of non-postgres protocols
   assert.throws(
     () => loadConfig({ DATABASE_URL: 'mysql://user:secretpass@localhost:3306/mydb' }),
     /Invalid DATABASE_URL: protocol must be postgres: or postgresql:/,
@@ -51,7 +51,7 @@ async function runConfigTests(): Promise<void> {
   );
   console.log('✔ Non-postgres protocol rejection test passed');
 
-  // 6. التحقق الأمني: التأكد من حدوث الخطأ وعدم تسريب كلمة المرور في نصه
+  // 6. Security verification: Ensure password is never leaked in error messages
   assert.throws(
     () => loadConfig({ DATABASE_URL: 'mysql://user:super_secret_password_123@localhost:3306/mydb' }),
     (error: unknown) => {

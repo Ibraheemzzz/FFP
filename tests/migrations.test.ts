@@ -150,11 +150,11 @@ async function runAllMigrationTests(): Promise<void> {
 
     // -------------------------------------------------------------
     // Test 4: Cleanup failure after successful migration (Plain Object)
-    // الغرض: التأكد من أنه إذا نجح تنفيذ المهاجرة ولكن فشل فك القفل:
-    // 1. المعاملة تصل إلى COMMIT بنجاح.
-    // 2. يُرمى خطأ التنظيف الصريح.
-    // 3. يُستدعى release(true) للتخلص من الاتصال مرة واحدة فقط.
-    // ملاحظة: هذا الاختبار يفحص تفرع الكود بكائن اتصال وهمي صريح، ولا ينشئ جداول حقيقية.
+    // Purpose: Ensure that if migration execution succeeds but unlock fails:
+    // 1. Transaction commits successfully.
+    // 2. Explicit cleanup error is thrown.
+    // 3. release(true) is called exactly once to discard the connection.
+    // Note: This test checks code branching via a plain fake connection object without creating real tables.
     // -------------------------------------------------------------
     const cleanupSuccessDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ffp-mig-fake-succ-'));
     try {
@@ -168,7 +168,7 @@ async function runAllMigrationTests(): Promise<void> {
       let releaseCalls = 0;
       let releaseArg: boolean | Error | undefined;
 
-      // كائن اتصال وهمي بسيط ومباشر دون استخدام كلاسات
+      // Simple fake connection object without classes
       const fakeClient = {
         async query(textOrConfig: string | { text: string }) {
           const queryText = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig.text;
@@ -178,7 +178,7 @@ async function runAllMigrationTests(): Promise<void> {
           }
 
           if (queryText.includes('pg_advisory_unlock')) {
-            // محاكاة إرجاع false عند فك القفل
+            // Simulate returning false on unlock
             return { rows: [{ unlocked: false }] };
           }
 
@@ -195,7 +195,7 @@ async function runAllMigrationTests(): Promise<void> {
         connect: async () => fakeClient,
       } as unknown as pg.Pool;
 
-      // 1. نتأكد من رمي خطأ التنظيف الصريح عند فشل فك القفل
+      // 1. Ensure explicit cleanup error is thrown when unlock fails
       await assert.rejects(
         async () => {
           await runMigrations(fakePool, cleanupSuccessDir);
@@ -204,10 +204,10 @@ async function runAllMigrationTests(): Promise<void> {
         'Must throw clear cleanup error when unlock fails after successful execution'
       );
 
-      // 2. نتأكد من أن المعاملة وصلت إلى COMMIT بنجاح قبل محاولة التنظيف
+      // 2. Ensure transaction reached COMMIT successfully before cleanup attempt
       assert.equal(reachedCommit, true, 'Migration transaction must reach COMMIT before cleanup attempt');
 
-      // 3. نتأكد من استدعاء release(true) مرة واحدة فقط للتخلص من الاتصال المعلق
+      // 3. Ensure release(true) is called exactly once to discard the connection
       assert.equal(releaseCalls, 1, 'Client release must be called exactly once');
       assert.equal(releaseArg, true, 'Client must be discarded via release(true) on unlock failure');
       console.log('✔ Cleanup failure after successful migration commits files, discards connection, and throws error (verified via fake connection)');
@@ -217,10 +217,10 @@ async function runAllMigrationTests(): Promise<void> {
 
     // -------------------------------------------------------------
     // Test 5: Cleanup failure with an original execution error (Plain Object)
-    // الغرض: التأكد من أنه إذا فشل تنفيذ الملف وفشل فك القفل أيضاً:
-    // 1. يُحفظ خطأ التنفيذ الأصلي ويُرمى دون أن يُستبدل بخطأ التنظيف.
-    // 2. يُستدعى release(true) للتخلص من الاتصال مرة واحدة فقط.
-    // ملاحظة: هذا الاختبار يفحص تفرع معالجة الأخطاء بكائن اتصال وهمي دون الاعتماد على PostgreSQL.
+    // Purpose: Ensure that if migration execution fails and unlock fails as well:
+    // 1. Original execution error is preserved and thrown, not masked by cleanup error.
+    // 2. release(true) is called exactly once to discard the connection.
+    // Note: This test checks error-handling branching via a fake connection object without PostgreSQL dependency.
     // -------------------------------------------------------------
     const cleanupErrDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ffp-mig-fake-err-'));
     try {
@@ -233,17 +233,17 @@ async function runAllMigrationTests(): Promise<void> {
       let releaseCalls = 0;
       let releaseArg: boolean | Error | undefined;
 
-      // كائن اتصال وهمي بسيط دون كلاسات
+      // Simple fake connection object without classes
       const fakeClient = {
         async query(textOrConfig: string | { text: string }) {
           const queryText = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig.text;
 
-          // محاكاة فشل استعلام تنفيذ ملف المهاجرة برمي خطأ أصلي
+          // Simulate migration execution failure with an original error
           if (queryText.includes('CREATE TABLE dummy_table')) {
             throw new Error('Simulated database execution failure in migration file');
           }
 
-          // محاكاة فشل فك القفل أيضاً في كتلة التنظيف
+          // Simulate unlock failure in cleanup block
           if (queryText.includes('pg_advisory_unlock')) {
             return { rows: [{ unlocked: false }] };
           }
@@ -261,7 +261,7 @@ async function runAllMigrationTests(): Promise<void> {
         connect: async () => fakeClient,
       } as unknown as pg.Pool;
 
-      // 1. نتأكد من بقاء خطأ التنفيذ الأصلي وعدم استبداله بخطأ التنظيف
+      // 1. Ensure original execution error is preserved and not masked
       await assert.rejects(
         async () => {
           await runMigrations(fakePool, cleanupErrDir);
@@ -270,7 +270,7 @@ async function runAllMigrationTests(): Promise<void> {
         'Must preserve and throw original execution error rather than replacing it with cleanup error'
       );
 
-      // 2. نتأكد من استدعاء release(true) مرة واحدة فقط للتخلص من الاتصال
+      // 2. Ensure release(true) is called exactly once to discard connection
       assert.equal(releaseCalls, 1, 'Client release must be called exactly once');
       assert.equal(releaseArg, true, 'Client must be discarded via release(true)');
       console.log('✔ Cleanup failure during error cleanup preserves original execution error and discards connection (verified via fake connection)');

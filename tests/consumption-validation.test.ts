@@ -1,5 +1,5 @@
 // tests/consumption-validation.test.ts
-// اختبارات التحقق من مدخلات طلب الاستهلاك (Part 16: Consumption Input Validation)
+// Tests for consumption input validation (Part 16: Consumption Input Validation)
 
 import assert from 'node:assert/strict';
 import {

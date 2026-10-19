@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 
 /**
- * نوع كائن الإعدادات المعتمد في كامل الخدمة
+ * Validated application configuration interface
  */
 export interface AppConfig {
   PORT: number;
@@ -11,27 +11,27 @@ export interface AppConfig {
 }
 
 /**
- * تحميل متغيرات ملف .env إلى process.env باستخدام دعم Node.js المدمج.
- * يتطلب هذا الدعم إصدار Node.js 20.12.0 أو 21.7.0 أو أحدث (حيث أُضيفت دالة process.loadEnvFile برمجياً، بينما علم --env-file أُضيف في 20.6.0). سنعتمد إصداراً متوافقاً في Docker لاحقاً.
- * إذا لم يكن الملف موجوداً، يتم تجاوز الخطوة للاعتماد على متغيرات نظام التشغيل أو Docker مباشرة.
+ * Loads variables from .env file into process.env using Node.js native support.
+ * Requires Node.js 20.12.0+ or 21.7.0+ for process.loadEnvFile.
+ * If file does not exist, step is skipped to rely directly on OS/container environment variables.
  */
 export function initEnvironment(envFilePath: string = '.env'): void {
   if (existsSync(envFilePath)) {
     try {
       process.loadEnvFile(envFilePath);
     } catch {
-      // رسالة آمنة لا تسرب أي معلومات حساسة أو تفاصيل بيئية غير مفحوصة
+      // Safe generic message preventing leakage of uninspected environment details
       throw new Error(`Failed to load environment file "${envFilePath}". Ensure the file is readable and formatted correctly.`);
     }
   }
 }
 
 /**
- * قراءة وتدقيق إعدادات البيئة (Fail-Fast Validation).
- * تقبل كائن env اختياري لتسهيل اختبار الدالة بعزل كامل عن بيئة الجهاز.
+ * Reads and validates environment configuration (Fail-Fast Validation).
+ * Accepts an optional env object for isolated unit testing.
  */
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
-  // 1. تدقيق المنفذ (PORT): عدد صحيح محصور بين 1 و 65535
+  // 1. Validate PORT: integer between 1 and 65535
   const rawPort = env.PORT ?? '3000';
   const isStrictInteger = /^\d+$/.test(rawPort);
   const parsedPort = Number(rawPort);
@@ -40,12 +40,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error('Invalid PORT: must be an integer between 1 and 65535');
   }
 
-  // 2. تدقيق المضيف (HOST): الافتراضي 127.0.0.1
+  // 2. Validate HOST: defaults to 127.0.0.1
   const host = env.HOST && env.HOST.trim().length > 0 ? env.HOST.trim() : '127.0.0.1';
 
-  // 3. تدقيق رابط قاعدة البيانات (DATABASE_URL):
-  // سياسة الرابط: هذا الفحص يتحقق من صحة شكل الرابط، والبروتوكول، ووجود المضيف فقط.
-  // هذا الفحص لا يثبت إمكانية الاتصال أو وجود قاعدة البيانات؛ ذلك يخص الجزء الخامس.
+  // 3. Validate DATABASE_URL:
+  // Verifies format, supported protocol, and host presence.
   const rawDatabaseUrl = env.DATABASE_URL;
 
   if (!rawDatabaseUrl || rawDatabaseUrl.trim().length === 0) {
@@ -56,7 +55,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   try {
     parsedUrl = new URL(rawDatabaseUrl);
   } catch {
-    // عدم طباعة الرابط لتجنب تسريب أي كلمات مرور
+    // Avoid echoing raw connection string to prevent credential exposure
     throw new Error('Invalid DATABASE_URL: value is not a valid URL');
   }
 

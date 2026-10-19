@@ -9,7 +9,7 @@ import { createPool } from '../src/db.js';
 import { runMigrations } from '../src/migrator.js';
 
 /**
- * دالة مساعدة لتعديل مسار اسم قاعدة البيانات داخل رابط الاتصال
+ * Helper to construct a database URL with a specific database name
  */
 function getDatabaseUrl(baseUrl: string, dbName: string): string {
   const parsed = new URL(baseUrl);
@@ -18,7 +18,7 @@ function getDatabaseUrl(baseUrl: string, dbName: string): string {
 }
 
 /**
- * دالة تهيئة قاعدة بيانات اختبار معزولة بالكامل
+ * Helper to initialize a fully isolated test database
  */
 async function setupIsolatedDatabase(adminPool: ReturnType<typeof createPool>, dbName: string): Promise<void> {
   await adminPool.query(`DROP DATABASE IF EXISTS ${dbName}`);
@@ -26,7 +26,7 @@ async function setupIsolatedDatabase(adminPool: ReturnType<typeof createPool>, d
 }
 
 async function runAccountTests(): Promise<void> {
-  // 1. تحميل إعدادات البيئة
+  // 1. Load environment configuration
   initEnvironment();
   const config = loadConfig();
 
@@ -36,12 +36,12 @@ async function runAccountTests(): Promise<void> {
   let app: FastifyInstance | undefined;
 
   try {
-    // 2. إنشاء وتجهيز قاعدة بيانات الاختبار المعزولة وتشغيل المهاجرات عليها
+    // 2. Setup isolated test database and run migrations
     await setupIsolatedDatabase(adminPool, TEST_DB_NAME);
     testPool = createPool(getDatabaseUrl(config.DATABASE_URL, TEST_DB_NAME));
     await runMigrations(testPool);
 
-    // 3. بناء تطبيق Fastify وربطه بقاعدة بيانات الاختبار
+    // 3. Build Fastify app connected to test database
     const testApp = buildApp({
       checkHealth: async () => true,
       pool: testPool,
@@ -49,7 +49,7 @@ async function runAccountTests(): Promise<void> {
     app = testApp;
 
     // -------------------------------------------------------------------------
-    // اختبار 1: إنشاء حساب بنجاح بالخطة الافتراضية العامة (plan_default_account)
+    // Test 1: Successfully create account with default public plan (plan_default_account)
     // -------------------------------------------------------------------------
     const resDefault = await testApp.inject({
       method: 'POST',
@@ -77,7 +77,7 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Account creation with default public plan passed (POST /accounts -> 201)');
 
     // -------------------------------------------------------------------------
-    // اختبار 2: التحقق من سرية المفتاح وحفظ بصمة SHA-256 فقط في قاعدة البيانات
+    // Test 2: Verify API key confidentiality and SHA-256 hash storage in DB
     // -------------------------------------------------------------------------
     const dbAccountRes = await testPool.query<{
       id: string;
@@ -89,16 +89,16 @@ async function runAccountTests(): Promise<void> {
     assert.equal(dbAccountRes.rows.length, 1, 'Account record must exist in DB');
     const dbRow = dbAccountRes.rows[0];
 
-    // التأكد من أن المفتاح الأصلي لم يُخزن نهائياً كنص صريح في القاعدة
+    // Ensure raw API key was never stored in the database
     assert.notEqual(dbRow.api_key_hash, createdAccount.apiKey, 'Raw API key must NEVER be stored in the database');
 
-    // التأكد من أن القيمة المخزنة تطابق تماماً بصمة SHA-256 للمفتاح الكامل
+    // Ensure stored value strictly matches SHA-256 hash of the complete API key
     const expectedHash = crypto.createHash('sha256').update(createdAccount.apiKey).digest('hex');
     assert.equal(dbRow.api_key_hash, expectedHash, 'Database must strictly store SHA-256 hash of the complete API key');
     console.log('✔ API key confidentiality and SHA-256 hash storage verified');
 
     // -------------------------------------------------------------------------
-    // اختبار 3: إعادة إرسال نفس الطلب تنشئ حساباً آخر بمفتاح مستقل (غياب نظام منع التكرار)
+    // Test 3: Re-submitting request generates distinct account with independent key
     // -------------------------------------------------------------------------
     const resDuplicate = await testApp.inject({
       method: 'POST',
@@ -115,9 +115,9 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Account re-submission generates distinct account verified (no idempotency)');
 
     // -------------------------------------------------------------------------
-    // اختبار 4: إنشاء حساب بخطة عامة محددة من نوع ACCOUNT
+    // Test 4: Create account with specified public ACCOUNT plan
     // -------------------------------------------------------------------------
-    // إضافة خطة عامة ثانية من نوع ACCOUNT
+    // Insert second public ACCOUNT plan
     await testPool.query(
       `INSERT INTO plans (id, name, type, monthly_limit, per_request_limit, owner_account_id)
        VALUES ('plan_enterprise_account', 'Enterprise Account Plan', 'ACCOUNT', 1000000, 5000, NULL)`
@@ -138,7 +138,7 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Account creation with specified public ACCOUNT plan passed');
 
     // -------------------------------------------------------------------------
-    // اختبار 5: رفض إنشاء حساب بخطة غير موجودة
+    // Test 5: Reject account creation with non-existent plan
     // -------------------------------------------------------------------------
     const resMissingPlan = await testApp.inject({
       method: 'POST',
@@ -154,7 +154,7 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Non-existent plan rejection passed (HTTP 400)');
 
     // -------------------------------------------------------------------------
-    // اختبار 6: رفض إنشاء حساب بخطة من نوع USER
+    // Test 6: Reject account creation with USER plan
     // -------------------------------------------------------------------------
     const resUserPlan = await testApp.inject({
       method: 'POST',
@@ -170,9 +170,9 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ USER plan assignment rejection for account passed (HTTP 400)');
 
     // -------------------------------------------------------------------------
-    // اختبار 7: رفض إسناد خطة خاصة مملوكة لحساب آخر
+    // Test 7: Reject assigning custom plan owned by another account
     // -------------------------------------------------------------------------
-    // إدراج خطة مخصصة يملكها الحساب الأول
+    // Insert custom plan owned by the first account
     await testPool.query(
       `INSERT INTO plans (id, name, type, monthly_limit, per_request_limit, owner_account_id)
        VALUES ('plan_custom_acme', 'Acme Custom Plan', 'ACCOUNT', 200000, 2000, $1)`,
@@ -193,7 +193,7 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Cross-account custom plan assignment rejection passed (HTTP 400)');
 
     // -------------------------------------------------------------------------
-    // اختبار 8: التحقق من سلامة المدخلات ورفض الأسماء الفارغة والطويلة والأنواع الخاطئة
+    // Test 8: Input validation rejecting empty, long, and invalid type names/planId
     // -------------------------------------------------------------------------
     const invalidInputs: Array<{ payload: unknown; headers?: Record<string, string>; desc: string }> = [
       { payload: null, headers: { 'content-type': 'application/json' }, desc: 'Null body' },
@@ -227,7 +227,7 @@ async function runAccountTests(): Promise<void> {
     console.log('✔ Input validation tests for name and planId passed (HTTP 400 on invalid inputs)');
 
     // -------------------------------------------------------------------------
-    // اختبار 9: التعامل مع عدم توفر مجموعة الاتصال
+    // Test 9: Handling missing database pool configuration
     // -------------------------------------------------------------------------
     const appWithoutPool = buildApp({
       checkHealth: async () => true,
@@ -245,7 +245,7 @@ async function runAccountTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // اختبار 10: محاكاة فشل استعلام قاعدة البيانات أثناء إنشاء الحساب
+    // Test 10: Simulate database query failure during account creation
     // -------------------------------------------------------------------------
     const failingDbPool = {
       query: async () => {
@@ -287,11 +287,11 @@ async function runAccountTests(): Promise<void> {
     if (testPool) {
       await testPool.end();
     }
-    // تنظيف قاعدة بيانات الاختبار المعزولة
+    // Cleanup isolated test database
     try {
       await adminPool.query(`DROP DATABASE IF EXISTS ${TEST_DB_NAME}`);
     } catch {
-      // تجاهل أخطاء الحذف إذا تم قفلها
+      // Ignore cleanup error if locked
     }
     await adminPool.end();
   }

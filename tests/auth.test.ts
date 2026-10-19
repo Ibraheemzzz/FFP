@@ -10,7 +10,7 @@ import { createPool } from '../src/db.js';
 import { runMigrations } from '../src/migrator.js';
 
 /**
- * دالة مساعدة لتعديل مسار اسم قاعدة البيانات داخل رابط الاتصال
+ * Helper to construct a database URL with a specific database name
  */
 function getDatabaseUrl(baseUrl: string, dbName: string): string {
   const parsed = new URL(baseUrl);
@@ -19,7 +19,7 @@ function getDatabaseUrl(baseUrl: string, dbName: string): string {
 }
 
 async function runAuthTests(): Promise<void> {
-  // 1. تحميل إعدادات البيئة
+  // 1. Load environment configuration
   initEnvironment();
   const config = loadConfig();
 
@@ -33,21 +33,21 @@ async function runAuthTests(): Promise<void> {
   let testExecutionError: unknown = null;
 
   try {
-    // 2. إنشاء قاعدة بيانات الاختبار المعزولة باسم فريد وتتبع نجاح إنشائها
+    // 2. Setup isolated test database with unique name
     await adminPool.query(`CREATE DATABASE ${TEST_DB_NAME}`);
     isDatabaseCreated = true;
 
     testPool = createPool(getDatabaseUrl(config.DATABASE_URL, TEST_DB_NAME));
     await runMigrations(testPool);
 
-    // 3. بناء تطبيق Fastify
+    // 3. Build Fastify application
     const testApp = buildApp({
       checkHealth: async () => true,
       pool: testPool,
     });
     app = testApp;
 
-    // 4. إنشاء حساب صالح للحصول على مفتاح API سليم
+    // 4. Create valid account to obtain a valid API key
     const createRes = await testApp.inject({
       method: 'POST',
       url: '/accounts',
@@ -69,8 +69,8 @@ async function runAuthTests(): Promise<void> {
     assert.ok(validKey.startsWith('ffp_live_'), 'Generated key must start with ffp_live_');
 
     // -------------------------------------------------------------------------
-    // اختبار 1: مصادقة ناجحة بمفتاح سليم مع صيغ مختلفة للمخطط (Bearer, bearer, BEARER)
-    // والتحقق الدقيق من الحقول الأربعة وتطابق createdAt
+    // Test 1: Successful authentication with valid key and scheme variations (Bearer, bearer, BEARER)
+    // and strict validation of 4 profile fields matching createdAt exactly
     // -------------------------------------------------------------------------
     const schemeVariations = ['Bearer', 'bearer', 'BEARER'];
     for (const scheme of schemeVariations) {
@@ -89,7 +89,7 @@ async function runAuthTests(): Promise<void> {
       );
       const authData = resAuthSuccess.json<Record<string, unknown>>();
 
-      // التحقق من احتواء الرد على الحقول الأربعة المتوقعة فقط دون أي حقول إضافية
+      // Verify response strictly contains only the 4 expected fields
       const expectedKeys = ['createdAt', 'id', 'name', 'planId'].sort();
       const actualKeys = Object.keys(authData).sort();
       assert.deepEqual(
@@ -98,7 +98,7 @@ async function runAuthTests(): Promise<void> {
         'Profile response must strictly contain only the 4 expected fields'
       );
 
-      // التحقق من تطابق القيم مع الحساب المنشأ
+      // Verify values match the created account
       assert.equal(authData.id, createdAccount.id, 'Authenticated account ID must match');
       assert.equal(authData.name, createdAccount.name, 'Authenticated account name must match');
       assert.equal(authData.planId, createdAccount.planId, 'Authenticated plan ID must match');
@@ -108,7 +108,7 @@ async function runAuthTests(): Promise<void> {
         'Authenticated createdAt must exactly match the creation timestamp'
       );
 
-      // التحقق من صحة تنسيق تاريخ ISO 8601
+      // Verify ISO 8601 date validity
       const parsedDate = new Date(authData.createdAt as string);
       assert.ok(!Number.isNaN(parsedDate.getTime()), 'createdAt must be a valid date');
       assert.equal(
@@ -117,14 +117,14 @@ async function runAuthTests(): Promise<void> {
         'createdAt must be a valid ISO 8601 string'
       );
 
-      // التأكد الصارم من عدم إرجاع المفتاح الأصلي أو بصمته
+      // Verify raw key or hash is never returned
       assert.equal(authData.apiKey, undefined, 'Raw API key must NOT be returned');
       assert.equal(authData.api_key_hash, undefined, 'API key hash must NOT be returned');
     }
     console.log('✔ Case-insensitive Bearer scheme variants (Bearer, bearer, BEARER) verified with strict fields');
 
     // -------------------------------------------------------------------------
-    // اختبار 2: رفض الطلب عند غياب ترويسة Authorization بالكامل -> 401 + WWW-Authenticate
+    // Test 2: Reject request when Authorization header is missing completely -> 401 + WWW-Authenticate
     // -------------------------------------------------------------------------
     const resMissingHeader = await testApp.inject({
       method: 'GET',
@@ -145,8 +145,7 @@ async function runAuthTests(): Promise<void> {
     console.log('✔ Missing Authorization header rejection passed (401 + WWW-Authenticate: Bearer)');
 
     // -------------------------------------------------------------------------
-    // اختبار 3: رفض الطلب عند استخدام نظام مصادقة غير Bearer -> 401 + WWW-Authenticate
-    // (استخدام أوصاف آمنة وتجنب طباعة المفتاح أو الترويسة في رسائل الفشل)
+    // Test 3: Reject non-Bearer authentication schemes -> 401 + WWW-Authenticate
     // -------------------------------------------------------------------------
     const nonBearerCases = [
       { desc: 'Basic authentication scheme', header: `Basic ${Buffer.from('user:pass').toString('base64')}` },
@@ -175,8 +174,7 @@ async function runAuthTests(): Promise<void> {
     console.log('✔ Non-Bearer authorization schemes rejection passed (401 + WWW-Authenticate: Bearer)');
 
     // -------------------------------------------------------------------------
-    // اختبار 4: رفض الطلب عند إرسال Bearer فارغ -> 401 + WWW-Authenticate
-    // (استخدام أوصاف آمنة لحالات الفراغ المختلفة)
+    // Test 4: Reject empty Bearer token -> 401 + WWW-Authenticate
     // -------------------------------------------------------------------------
     const emptyBearerCases = [
       { desc: 'Bearer keyword only without space', header: 'Bearer' },
@@ -206,8 +204,7 @@ async function runAuthTests(): Promise<void> {
     console.log('✔ Empty Bearer token rejection passed (401 + WWW-Authenticate: Bearer)');
 
     // -------------------------------------------------------------------------
-    // اختبار 5: رفض المفاتيح ذات التنسيق غير الصالح -> 401 + WWW-Authenticate
-    // (استخدام أوصاف آمنة دون إظهار قيم المفاتيح في رسائل الفشل)
+    // Test 5: Reject malformed API key formats -> 401 + WWW-Authenticate
     // -------------------------------------------------------------------------
     const invalidFormatCases = [
       { desc: 'Missing prefix completely', key: 'not_even_starting_with_prefix' },
@@ -237,7 +234,7 @@ async function runAuthTests(): Promise<void> {
     console.log('✔ Malformed API key formats rejection passed (401 + WWW-Authenticate: Bearer)');
 
     // -------------------------------------------------------------------------
-    // اختبار 6: مفتاح بتنسيق سليم تماماً لكنه غير موجود في قاعدة البيانات -> 401
+    // Test 6: Well-formed key not in database -> 401
     // -------------------------------------------------------------------------
     const nonExistentKey = `ffp_live_${crypto.randomBytes(32).toString('hex')}`;
     const resNonExistent = await testApp.inject({
@@ -254,8 +251,7 @@ async function runAuthTests(): Promise<void> {
     console.log('✔ Non-existent API key rejection passed (401 + WWW-Authenticate: Bearer)');
 
     // -------------------------------------------------------------------------
-    // اختبار 7: إثبات أن المفتاح غير صالح التنسيق يُرفض بـ 401 دون أي استدعاء لـ pool.query
-    // (باستخدام Pool وهمي وعدّاد للاستدعاءات - Fail-Fast Verification)
+    // Test 7: Malformed key rejected with 401 without calling pool.query (Fail-Fast Verification)
     // -------------------------------------------------------------------------
     let queryCallCount = 0;
     const countingPool = {
@@ -295,7 +291,7 @@ async function runAuthTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // اختبار 8: التأكد من توقف معالجة الطلب قبل تنفيذ معالج المسار عند فشل المصادقة
+    // Test 8: Ensure request pipeline halts before route handler on auth failure
     // -------------------------------------------------------------------------
     let handlerExecuted = false;
     const authHook = createAuthPreHandler(testPool);
@@ -327,7 +323,7 @@ async function runAuthTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // اختبار 9: خطأ فشل pool.query يرجع 500 برسالة عامة ويوقف معالج المسار (دون تحويله لـ 401)
+    // Test 9: Database query failure returns generic 500 error and halts route handler
     // -------------------------------------------------------------------------
     const failingPool = {
       query: async () => {
@@ -379,7 +375,7 @@ async function runAuthTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // اختبار 10: خطأ غياب مجموعة الاتصال (Pool) هو خطأ خادم داخلي 500 وليس 401
+    // Test 10: Missing pool configuration is a 500 error, not 401
     // -------------------------------------------------------------------------
     const appWithoutPool = buildApp({
       checkHealth: async () => true,
@@ -402,23 +398,23 @@ async function runAuthTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // اختبار 11: بقاء المسارات العامة مفتوحة دون اشتراط ترويسة Authorization
+    // Test 11: Public endpoints remain accessible without Authorization header
     // -------------------------------------------------------------------------
-    // أ. GET /health
+    // a. GET /health
     const resHealth = await testApp.inject({
       method: 'GET',
       url: '/health',
     });
     assert.equal(resHealth.statusCode, 200, 'Liveness probe /health must remain public without auth');
 
-    // ب. GET /health/ready (مطلوب صراحة في المتطلبات)
+    // b. GET /health/ready
     const resReady = await testApp.inject({
       method: 'GET',
       url: '/health/ready',
     });
     assert.equal(resReady.statusCode, 200, 'Readiness probe /health/ready must remain public without auth');
 
-    // ج. POST /accounts (تسجيل الحسابات الجديدة)
+    // c. POST /accounts (Public account signup)
     const resNewAccount = await testApp.inject({
       method: 'POST',
       url: '/accounts',
@@ -432,7 +428,7 @@ async function runAuthTests(): Promise<void> {
     testExecutionError = err;
   } finally {
     // -------------------------------------------------------------------------
-    // تنظيف متسلسل ومستقل للموارد (Sequential and Independent Resource Cleanup)
+    // Sequential and Independent Resource Cleanup
     // -------------------------------------------------------------------------
     let cleanupError: unknown = null;
 
@@ -470,7 +466,7 @@ async function runAuthTests(): Promise<void> {
       console.error('Failed to close adminPool cleanly during cleanup:', err);
     }
 
-    // الحفاظ على خطأ الاختبار الأصلي وعدم طمسه بخطأ التنظيف
+    // Preserve original test error and do not mask with cleanup error
     if (testExecutionError) {
       throw testExecutionError;
     }
