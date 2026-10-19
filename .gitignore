@@ -2,3 +2,4 @@ node_modules/
 dist/
 .env
 scratch/
+usage-metering-arabic-guide.md
