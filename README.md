@@ -71,7 +71,7 @@ Every consumption request (`POST /consumptions`) is evaluated against four deter
   }
   ```
 - **Dynamic Balance Calculation:** Remaining allowances are computed with non-negative flooring:
-  $$\text{remaining} = \max(0, \text{monthly\_allowance} - \text{consumed})$$
+  `remaining = Math.max(0, monthlyLimit - consumed)`
 
 ---
 
@@ -313,7 +313,7 @@ npm run benchmark
 
 ### Benchmark Summary Across 5 Real-HTTP Scenarios
 
-| Scenario | Concurrency ($C$) | Requests | Avg Throughput (req/s) | Latency p50 (ms) | Avg p95 of Runs (ms) | Latency p99 (ms) | DB Integrity Audit |
+| Scenario | Concurrency (C) | Requests | Avg Throughput (req/s) | Latency p50 (ms) | Avg p95 of Runs (ms) | Latency p99 (ms) | DB Integrity Audit |
 |---|---|---|---|---|---|---|---|
 | **1. Single Account (Lock Contention)** | 15 | 1,800 (3 runs) | **240.25** | 61.11 | 66.59 | 99.73 | **100% PASSED** (0 discrepancies) |
 | **2. Multi-Tenant Parallelism** (10 Accounts) | 15 | 1,800 (3 runs) | **653.19** | 22.27 | 30.53 | 35.61 | **100% PASSED** (0 discrepancies) |
