@@ -1,0 +1,18 @@
+{
+  "name": "usage-metering-demo-client",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone Demo Client for Usage Metering and Quotas Service",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "demo": "tsx src/index.ts --demo",
+    "test": "tsx tests/demo.test.ts && tsx tests/menu.test.ts",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
