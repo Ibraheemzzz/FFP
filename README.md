@@ -212,30 +212,26 @@ docker compose up --build
 #### Startup Sequence:
 1. **`postgres`:** Starts PostgreSQL 16 on an isolated bridge network with persistent volume storage (`postgres_data`). Health check validates readiness via `pg_isready`.
 2. **`service`:** Waits for PostgreSQL to be healthy, executes schema migrations (`001`, `002`, `003`), seeds default plans, and starts listening on `0.0.0.0:3000`. Readiness check validates HTTP and DB readiness via `GET /health/ready`.
-3. **`demo-client`:** Waits for the service to be healthy, executes a 7-step automated scenario (account creation, plan assignments, allowed consumption, user quota rejection, account quota rejection, immediate plan upgrades, and audit inspection), and exits with code `0`.
+3. The REST API service is immediately listening on `http://localhost:3000`.
 4. The `service` and `postgres` containers remain running and ready for traffic.
 
 ---
 
-### 2. Interactive CLI Demo Client
-To interactively explore the service using a terminal menu:
+### 2. Standalone Web Client (`client/`)
+The project includes a lightweight, modular, 100% English standalone client completely decoupled from the backend service to interactively test quota scenarios and inspect live HTTP traffic:
 
-```bash
-docker compose run --rm demo-client npm start
-```
-
-This launches the interactive CLI connected to the live service:
-```text
-──────────────────────────────────────────────────────────────────────
-Active User: Ahmed (usr_...) | Plan: plan_default_user
-──────────────────────────────────────────────────────────────────────
-1. Select user
-2. Perform action
-3. View usage and remaining allowance
-4. Change plan settings
-5. Run guided demo
-0. Exit
-```
+1. Ensure the backend service is running (`docker compose up -d` or `npm run dev`).
+2. Start the web console:
+   ```bash
+   npm run client
+   ```
+   *(Or spin up the full stack including the client via `docker compose up client`)*.
+3. Open [http://localhost:4000](http://localhost:4000) in your web browser. The client connects via its local reverse proxy to the backend and provides:
+   - **Account & Auth:** Instant demo account registration, profile retrieval, and API key management with a show/hide toggle.
+   - **Plan Management:** List public plans, define custom user/account plans, edit limits, and assign plans to accounts.
+   - **User Management:** Register users (automatically capturing and selecting the service-generated cryptographic `userId`), and reassign user plans.
+   - **Consumption & Idempotency Playground:** Send consumption requests, test one-click educational scenarios (normal accept, user per-request cap exceeded, account monthly allowance exceeded, and idempotent replays with zero double-deductions).
+   - **Live HTTP Protocol Inspector:** Inspects exact HTTP request methods, paths, headers (with API key masking enabled by default), JSON request payloads, status badges, latency timers, and formatted response bodies.
 
 ---
 
@@ -260,7 +256,6 @@ Removes all containers, networks, and persistent data volumes for a fresh start.
 ### 1. Install Dependencies
 ```bash
 npm install
-npm --prefix demo-client install
 ```
 
 ### 2. Environment Setup
@@ -275,21 +270,15 @@ Ensure your PostgreSQL instance is running on the port specified in `.env` (defa
 # Compile TypeScript to dist/
 npm run build
 
-# Start Fastify service in development mode (with tsx)
+# Start Fastify service in development mode with interactive web console (at http://localhost:3000)
 npm run dev
-
-# Run automated demo client locally
-npm run demo
-
-# Run interactive demo client locally
-npm --prefix demo-client start
 ```
 
 ---
 
 ## 10. Automated Testing
 
-The project includes **26 comprehensive test suites** covering unit logic, database migrations, authentication, concurrency locks, idempotency, and the demo client:
+The project includes **25 comprehensive test suites** covering unit logic, database migrations, authentication, concurrency locks, idempotency, and the interactive web console:
 
 ```bash
 npm test
@@ -297,7 +286,7 @@ npm test
 
 ### Test Suite Structure
 - **Core Service (`tests/`):** 24 suites testing configuration, health probes, connection pools, schema migrations, account registration, Bearer authentication, tenant isolation, user management, plan CRUD and assignments, in-flight plan mutations, payload validation, calendar month partitioning, 4-rule quota evaluation, dynamic balance math, atomic transactions, row-level concurrency locking, idempotency deduplication, usage analytics, consumption endpoints, and error handling.
-- **Demo Client (`demo-client/tests/`):** 2 suites validating automated scenario execution and interactive menu state transitions.
+- **Standalone Client & Proxy Tests (`client/tests/client.test.ts`):** Validates client asset integrity (`client/index.html`, `client/style.css`, `client/app.js` in 100% English), static serving, reverse-proxy routing, and executes an end-to-end integration scenario (account creation, custom plan definition, in-flight plan modification, multiple user plans, allowed and quota-rejected consumption, idempotency replay, and audit inspection).
 
 ---
 

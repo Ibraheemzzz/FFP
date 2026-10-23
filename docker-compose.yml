@@ -42,19 +42,20 @@ services:
     networks:
       - metering_network
 
-  demo-client:
+  client:
     build:
-      context: ./demo-client
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: client/Dockerfile
+    ports:
+      - "4000:4000"
     environment:
+      PORT: 4000
       API_BASE_URL: http://service:3000
     depends_on:
       service:
         condition: service_healthy
     networks:
       - metering_network
-    stdin_open: true
-    tty: true
 
 volumes:
   postgres_data:

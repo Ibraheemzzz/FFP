@@ -5,9 +5,10 @@
   "description": "Usage Metering and Quotas Service",
   "scripts": {
     "dev": "tsx src/server.ts",
-    "demo": "tsx demo-client/src/index.ts --demo",
+    "client": "tsx client/server.ts",
+    "demo": "tsx client/server.ts",
     "build": "tsc",
-    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts && tsx tests/plan-assignments.test.ts && tsx tests/plan-changes.test.ts && tsx tests/consumption-validation.test.ts && tsx tests/processing-month.test.ts && tsx tests/quota-evaluation.test.ts && tsx tests/consumed-and-remaining.test.ts && tsx tests/atomic-transaction.test.ts && tsx tests/concurrency-and-locks.test.ts && tsx tests/idempotency.test.ts && tsx tests/usage.test.ts && tsx tests/consumptions.test.ts && tsx tests/requests.test.ts && tsx tests/errors-and-logging.test.ts && tsx demo-client/tests/demo.test.ts && tsx demo-client/tests/menu.test.ts",
+    "test": "tsx tests/config.test.ts && tsx tests/health.test.ts && tsx tests/db.test.ts && tsx tests/migrations.test.ts && tsx tests/accounts.test.ts && tsx tests/auth.test.ts && tsx tests/isolation.test.ts && tsx tests/users.test.ts && tsx tests/plans.test.ts && tsx tests/default-plans.test.ts && tsx tests/custom-plans.test.ts && tsx tests/plan-assignments.test.ts && tsx tests/plan-changes.test.ts && tsx tests/consumption-validation.test.ts && tsx tests/processing-month.test.ts && tsx tests/quota-evaluation.test.ts && tsx tests/consumed-and-remaining.test.ts && tsx tests/atomic-transaction.test.ts && tsx tests/concurrency-and-locks.test.ts && tsx tests/idempotency.test.ts && tsx tests/usage.test.ts && tsx tests/consumptions.test.ts && tsx tests/requests.test.ts && tsx tests/errors-and-logging.test.ts && tsx client/tests/client.test.ts",
     "benchmark": "tsx scripts/benchmark.ts",
     "start": "node dist/src/server.js"
   },

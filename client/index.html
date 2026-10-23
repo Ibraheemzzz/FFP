@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Usage Metering & Quotas Service - Interactive Web Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header>
+    <div>
+      <h1>⚡ Usage Metering & Quotas Service</h1>
+      <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.2rem;">
+        Standalone Interactive Client & Live HTTP Protocol Inspector
+      </p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 0.4rem;">
+        <label for="api-base-url" style="margin: 0; font-size: 0.75rem;">Service URL:</label>
+        <input type="text" id="api-base-url" value="/api" style="width: 180px; padding: 0.3rem 0.5rem; font-size: 0.8rem;">
+      </div>
+      <span id="health-badge" class="badge">Checking health...</span>
+      <button class="btn-secondary" onclick="checkHealth()">🔄 Probe</button>
+    </div>
+  </header>
+
+  <main class="container" style="margin-top: 1.5rem;">
+    <!-- Left Column: Controls and Operations -->
+    <div class="controls-panel">
+
+      <!-- 1. Account & Authentication -->
+      <section class="card">
+        <h2>🔑 1. Account & Authentication</h2>
+        <div class="row">
+          <button class="btn-green" onclick="createNewAccount()">➕ Create New Account (POST /accounts)</button>
+          <button class="btn-secondary" onclick="getAccountProfile()">👤 Get Profile (GET /account/me)</button>
+        </div>
+
+        <div class="row" style="margin-top: 0.75rem;">
+          <div class="col">
+            <label for="api-key">Active API Key (Bearer Token):</label>
+            <div style="display: flex; gap: 0.5rem;">
+              <input type="password" id="api-key" placeholder="ffp_live_...">
+              <button class="btn-secondary" onclick="toggleApiKeyVisibility()" style="padding: 0 0.6rem;">👁</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="account-info" style="font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem;">
+          No active account registered in this session. Click <strong>Create New Account</strong> above to generate one.
+        </div>
+      </section>
+
+      <!-- 2. Plans Management -->
+      <section class="card">
+        <h2>📋 2. Plans Management</h2>
+        <div class="row">
+          <button class="btn-secondary" onclick="listPlans()">📜 List Public Plans (GET /plans)</button>
+        </div>
+
+        <h3 style="margin-top: 0.75rem;">Create Custom Plan (POST /plans):</h3>
+        <div class="row">
+          <div class="col">
+            <label for="new-plan-name">Plan Name:</label>
+            <input type="text" id="new-plan-name" value="Custom Pro Tier">
+          </div>
+          <div class="col">
+            <label for="new-plan-type">Target Scope:</label>
+            <select id="new-plan-type">
+              <option value="USER" selected>USER (Per-user allowance & cap)</option>
+              <option value="ACCOUNT">ACCOUNT (Account-wide pool)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="new-plan-monthly">Monthly Limit (units):</label>
+            <input type="number" id="new-plan-monthly" value="5000">
+          </div>
+          <div class="col">
+            <label for="new-plan-per-req">Per-Request Limit (units):</label>
+            <input type="number" id="new-plan-per-req" value="250">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn-secondary" onclick="createCustomPlan()">💾 Create Custom Plan</button>
+        </div>
+
+        <h3 style="margin-top: 0.75rem;">Modify Plan or Assign to Account:</h3>
+        <div class="row">
+          <div class="col">
+            <label for="target-plan-id">Target Plan ID:</label>
+            <input type="text" id="target-plan-id" placeholder="e.g. plan_default_account">
+          </div>
+          <div class="col">
+            <label for="edit-plan-monthly">New Monthly Limit:</label>
+            <input type="number" id="edit-plan-monthly" placeholder="e.g. 50000">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn-secondary" onclick="getPlanDetails()">🔍 Get Plan Details (GET /plans/:id)</button>
+          <button class="btn-secondary" onclick="updatePlan()">✏️ Update Plan (PATCH /plans/:id)</button>
+          <button class="btn-secondary" onclick="assignAccountPlan()">🏢 Assign to Account (PATCH /account/plan)</button>
+        </div>
+        <div id="plan-inspect-result" style="font-size: 0.85rem; margin-top: 0.5rem;"></div>
+      </section>
+
+      <!-- 3. Users Management -->
+      <section class="card">
+        <h2>👥 3. Users Management</h2>
+        <div class="row">
+          <div class="col">
+            <label for="user-plan-id">Assigned User Plan ID (optional):</label>
+            <input type="text" id="user-plan-id" placeholder="Default: plan_default_user">
+          </div>
+          <div class="col">
+            <label for="user-external-id">External Reference ID (optional):</label>
+            <input type="text" id="user-external-id" placeholder="e.g. ext_user_101">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn-green" onclick="createUser()">➕ Register User (POST /users)</button>
+        </div>
+
+        <h3 style="margin-top: 0.75rem;">Reassign User Plan (PATCH /users/:id/plan):</h3>
+        <div class="row">
+          <div class="col">
+            <label for="reassign-user-id">User ID:</label>
+            <input type="text" id="reassign-user-id" placeholder="usr_...">
+          </div>
+          <div class="col">
+            <label for="reassign-plan-id">New Plan ID:</label>
+            <input type="text" id="reassign-plan-id" placeholder="e.g. plan_custom_...">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn-secondary" onclick="updateUserPlan()">🔄 Reassign User Plan</button>
+        </div>
+
+        <h3 style="margin-top: 0.75rem;">Inspect User Profile (GET /users/:id):</h3>
+        <div class="row">
+          <div class="col">
+            <label for="inspect-user-id">Target User ID:</label>
+            <input type="text" id="inspect-user-id" placeholder="usr_...">
+          </div>
+          <div style="display: flex; align-items: flex-end;">
+            <button class="btn-secondary" onclick="getUserProfile()">🔍 Get User Details</button>
+          </div>
+        </div>
+        <div id="user-inspect-result" style="font-size: 0.85rem; margin-top: 0.4rem;"></div>
+      </section>
+
+      <!-- 4. Quota Consumption & Idempotency Playground -->
+      <section class="card">
+        <h2>⚡ 4. Quota Consumption Playground</h2>
+        <div class="row">
+          <div class="col">
+            <label for="consume-user-id">Consumer User ID (Required):</label>
+            <input type="text" id="consume-user-id" placeholder="usr_...">
+          </div>
+          <div class="col">
+            <label for="consume-units">Requested Units:</label>
+            <input type="number" id="consume-units" value="10">
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="consume-request-id">Client Request ID (Idempotency Key):</label>
+            <input type="text" id="consume-request-id">
+          </div>
+          <div style="display: flex; align-items: flex-end;">
+            <button class="btn-secondary" onclick="generateNewRequestId()">🎲 Randomize ID</button>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top: 0.5rem;">
+          <button class="btn-green" style="flex: 1;" onclick="sendConsumption()">🚀 Send Consumption Request (POST /consumptions)</button>
+        </div>
+
+        <!-- Quick One-Click Educational Scenarios -->
+        <h3 style="margin-top: 1rem;">⚡ One-Click Educational Scenarios:</h3>
+        <div class="scenarios-grid">
+          <div class="scenario-btn" onclick="runScenario('accept')">
+            <strong>✅ 1. Normal Accept</strong>
+            <span>Requests 10 units within available user and account allowances</span>
+          </div>
+          <div class="scenario-btn" onclick="runScenario('user_cap')">
+            <strong>❌ 2. Reject: User Cap Exceeded</strong>
+            <span>Requests 600 units (Rule 2: user / max_per_request)</span>
+          </div>
+          <div class="scenario-btn" onclick="runScenario('user_allowance')">
+            <strong>❌ 3. Reject: User Monthly Limit</strong>
+            <span>Assigns 20-unit limit and requests 25 (Rule 3: user / monthly_allowance)</span>
+          </div>
+          <div class="scenario-btn" onclick="runScenario('account_allowance')">
+            <strong>❌ 4. Reject: Account Monthly Limit</strong>
+            <span>Configures 50-unit limit and requests 60 (Rule 4: account / monthly_allowance)</span>
+          </div>
+          <div class="scenario-btn" style="grid-column: 1 / -1;" onclick="runScenario('idempotency')">
+            <strong>🔁 5. Idempotency Replay (Zero Double-Deduction)</strong>
+            <span>Restores exact original (userId, units, requestId): verifies guaranteed zero double-charging</span>
+          </div>
+        </div>
+
+        <!-- Visual Outcome Banner -->
+        <div id="consumption-result" class="result-box"></div>
+      </section>
+
+      <!-- 5. Balances & Audit Ledger -->
+      <section class="card">
+        <h2>📊 5. Balances & Audit Ledger</h2>
+        
+        <div class="row">
+          <div class="col">
+            <label for="usage-query-month">Query Month (Optional YYYY-MM, leave empty for current):</label>
+            <input type="text" id="usage-query-month" placeholder="e.g. 2026-09 (leave empty for current)">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn-secondary" onclick="getAccountUsage()">🏢 Account Usage (GET /account/usage)</button>
+          <button class="btn-secondary" onclick="getUserUsage()">👤 User Usage (GET /users/:id/usage)</button>
+        </div>
+        <div id="usage-summary" style="font-size: 0.85rem; margin-top: 0.5rem;"></div>
+
+        <!-- Request History Filters & Pagination -->
+        <h3 style="margin-top: 1.25rem;">📜 Request History & Audit Ledger (GET /requests):</h3>
+        <div class="row">
+          <div class="col">
+            <label for="filter-user-id">Filter User ID:</label>
+            <input type="text" id="filter-user-id" placeholder="usr_... (optional)" oninput="resetHistoryOffset()">
+          </div>
+          <div class="col">
+            <label for="filter-status">Filter Status:</label>
+            <select id="filter-status" onchange="resetHistoryOffset()">
+              <option value="" selected>All Statuses</option>
+              <option value="ACCEPTED">ACCEPTED</option>
+              <option value="REJECTED">REJECTED</option>
+            </select>
+          </div>
+          <div class="col">
+            <label for="filter-month">Filter Month:</label>
+            <input type="text" id="filter-month" placeholder="YYYY-MM (optional)" oninput="resetHistoryOffset()">
+          </div>
+          <div style="min-width: 90px; width: 90px;">
+            <label for="filter-limit">Page Size:</label>
+            <select id="filter-limit" onchange="resetHistoryOffset()">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top: 0.5rem; justify-content: space-between; align-items: center;">
+          <button class="btn-secondary" onclick="getRequestHistory()">🔍 Search / Apply Filters</button>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button id="history-prev-btn" class="btn-secondary" onclick="navigateHistoryPrev()" disabled>⬅️ Previous</button>
+            <span id="history-page-info" style="font-size: 0.78rem; color: var(--muted); font-family: var(--font-mono);">Offset: 0</span>
+            <button id="history-next-btn" class="btn-secondary" onclick="navigateHistoryNext()" disabled>Next ➡️</button>
+          </div>
+        </div>
+        <div id="history-table-container"></div>
+      </section>
+
+    </div>
+
+    <!-- Right Column: The HTTP Inspector -->
+    <div class="inspector-panel">
+
+      <section class="card" style="position: sticky; top: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <h2>🔬 Live HTTP Protocol Inspector</h2>
+          <label class="toggle-row">
+            <input type="checkbox" id="mask-key-toggle" checked onchange="rerenderInspector()">
+            Mask API Key in display
+          </label>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--muted); margin-bottom: 1rem;">
+          Inspects the exact HTTP protocol messages dispatched to and received from the service.
+        </p>
+
+        <!-- Sent Request Inspector -->
+        <div style="margin-bottom: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+            <h3 style="color: #7ee787;">📤 HTTP Request Sent</h3>
+            <span id="req-method-badge" class="badge">--</span>
+          </div>
+          <div id="inspector-request" class="code-block">// Click any action button to inspect dispatched HTTP request...</div>
+        </div>
+
+        <!-- Received Response Inspector -->
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+            <h3 style="color: #58a6ff;">📥 HTTP Response Received</h3>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <span id="res-duration" style="font-size: 0.75rem; color: var(--muted);"></span>
+              <span id="res-status-badge" class="status-badge">--</span>
+            </div>
+          </div>
+          <div id="inspector-response" class="code-block">// Response headers and status code will appear here...</div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
